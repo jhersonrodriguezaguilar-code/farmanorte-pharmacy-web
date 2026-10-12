@@ -5,7 +5,7 @@ test('real Supabase configuration reaches the pharmacy login', async ({ page }) 
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
-  await page.goto('/');
+  await page.goto('.');
   await expect(page.getByText('Acceso de farmacia')).toBeVisible();
   await expect(page.getByLabel('Usuario o correo')).toBeVisible();
   await expect(page.getByText('Acceso seguro para personal autorizado')).toBeVisible();

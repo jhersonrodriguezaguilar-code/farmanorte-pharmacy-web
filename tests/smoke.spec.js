@@ -4,7 +4,7 @@ test('renders the explicit configuration state without fake data', async ({ page
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
-  await page.goto('/');
+  await page.goto('.');
   const configurationRequired = page.getByText('Configuración requerida');
   if (await configurationRequired.isVisible().catch(() => false)) {
     await expect(page.getByText('Conecta el panel con Supabase')).toBeVisible();

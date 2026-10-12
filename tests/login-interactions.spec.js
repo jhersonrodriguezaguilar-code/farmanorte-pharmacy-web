@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 async function requireRealLogin(page) {
-  await page.goto('/');
+  await page.goto('.');
   const configurationRequired = page.getByText('Configuración requerida');
   test.skip(await configurationRequired.isVisible().catch(() => false), 'Requires the real Supabase URL and publishable key.');
 }
