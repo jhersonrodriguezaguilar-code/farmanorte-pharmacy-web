@@ -1,24 +1,31 @@
-# FarmaNorte · Página web de farmacias
+# FarmaNorte · página operativa de farmacia
 
-Página web para que las farmacias publiquen y consulten domicilios en tiempo real, conectada al proyecto real de Supabase.
+Panel web estático para que el personal autorizado publique domicilios en Supabase. No crea usuarios, no carga datos demo y no permite publicar si el perfil no es de farmacia, la farmacia está inactiva o la zona no está configurada.
 
-## Publicación
+## Ejecutar
 
-El repositorio se publica automáticamente en GitHub Pages cada vez que se actualiza `main`.
+### Abrir con doble clic en Windows
 
-## Configuración segura
+Desde la carpeta principal del proyecto, ejecuta `ABRIR-PAGINA-FARMACIA.bat`.
+También puedes ejecutar `pharmacy_web/ABRIR-PAGINA-FARMACIA.bat`. El script
+instala las dependencias si faltan, levanta Vite y abre la página en el
+navegador en `http://127.0.0.1:5173`.
 
-La aplicación usa únicamente:
+La interfaz se puede visualizar aunque todavía no exista `.env.local`. Para
+publicar domicilios y consultar Supabase, completa primero las variables
+públicas indicadas abajo.
 
-- `VITE_SUPABASE_URL`
-- `VITE_SUPABASE_PUBLISHABLE_KEY`
+1. Copia `.env.example` como `.env.local`.
+2. Completa `VITE_SUPABASE_URL` y `VITE_SUPABASE_PUBLISHABLE_KEY` con los datos públicos del proyecto real.
+3. Ejecuta `npm install` y después `npm run dev`.
+4. Para GitHub Pages, el flujo de GitHub Actions genera `dist/` y publica el
+   resultado automáticamente. Para Hostinger u otro dominio en la raíz,
+   ejecuta `npm run build` y sube el contenido de `dist/` al directorio
+   público.
 
-Ambas son variables públicas del cliente y se configuran como variables del repositorio en GitHub. No se incluye `.env.local`, una clave `service_role` ni ninguna credencial privada.
+La clave `publishable`/`anon` es la única que debe llegar al navegador. Nunca se debe poner una clave `service_role` en esta página.
 
-## Desarrollo local
-
-```bash
-npm ci
-copy .env.example .env.local
-npm run dev
-```
+La página incluye manifiesto PWA y service worker para permitir añadirla a la
+pantalla de inicio en iPhone. El service worker solo cachea la interfaz local;
+las lecturas, escrituras, autenticación y tiempo real siguen dependiendo de
+Supabase.

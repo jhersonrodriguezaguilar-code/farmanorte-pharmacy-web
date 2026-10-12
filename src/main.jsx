@@ -1695,3 +1695,11 @@ function AccessProblem({ error, onSignOut }) {
 export default App;
 
 createRoot(document.getElementById('root')).render(<App />);
+
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => {
+      // La página sigue funcionando aunque el navegador no permita PWA.
+    });
+  });
+}
