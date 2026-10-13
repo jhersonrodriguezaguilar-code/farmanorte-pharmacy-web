@@ -1,11 +1,11 @@
 {
-    "name": "FarmaNorte · Domiciliarios",
-    "short_name": "FarmaNorte",
+    "name": "farmanorte · domiciliarios",
+    "short_name": "farmanorte",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#F5F8FA",
-    "theme_color": "#00BFA6",
-    "description": "Aplicación operativa para domiciliarios y administradores de FarmaNorte.",
+    "background_color": "#F3F7FC",
+    "theme_color": "#003399",
+    "description": "Aplicación operativa para domiciliarios y administradores de farmanorte.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
