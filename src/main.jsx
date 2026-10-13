@@ -1160,7 +1160,18 @@ function App() {
         setWeeklyZoneCouriers(weeklyRows);
       };
 
-      await loadZoneCouriers();
+      // Estas consultas no dependen entre sí. Ejecutarlas en paralelo evita que
+      // la pantalla espere primero la semana de turnos y luego los pedidos.
+      const zoneCouriersPromise = loadZoneCouriers();
+      const deliveryPromise = supabase
+        .from('deliveries')
+        .select('*')
+        .eq('pharmacy_code', pharmacyData.code)
+        .order('created_at', { ascending: false })
+        .limit(30);
+      const breakdownPromise = loadCourierBreakdown(pharmacyData.code);
+
+      await Promise.all([zoneCouriersPromise, breakdownPromise]);
       if (!isCurrent()) return;
 
       const scheduleZoneCourierRefresh = () => {
@@ -1174,12 +1185,7 @@ function App() {
       clearCourierRefresh();
       courierRefreshInterval = window.setInterval(scheduleZoneCourierRefresh, 10000);
 
-      const { data: deliveryData, error: deliveriesError } = await supabase
-        .from('deliveries')
-        .select('*')
-        .eq('pharmacy_code', pharmacyData.code)
-        .order('created_at', { ascending: false })
-        .limit(30);
+      const { data: deliveryData, error: deliveriesError } = await deliveryPromise;
 
       if (!isCurrent()) return;
       if (deliveriesError) {
@@ -1196,7 +1202,6 @@ function App() {
           window.history.replaceState({}, '', window.location.pathname);
         }
       }
-      await loadCourierBreakdown(pharmacyData.code);
       setLoading(false);
 
       const knownDeliveryIds = new Set((deliveryData ?? []).map((item) => item.id));
@@ -1412,6 +1417,7 @@ function App() {
       setError(getErrorMessage(assignmentError));
       return false;
     }
+    triggerPushNotification({ event: 'delivery_assigned', delivery_id: deliveryId });
     const courier = assignedCouriers.find((item) => item.courier_id === courierId);
     setNotice(`Domicilio reasignado a ${courier?.full_name || 'el domiciliario seleccionado'}.`);
     return true;
@@ -1744,7 +1750,7 @@ function App() {
       approval_pending: false,
       created_by: session.user.id,
       pharmacy_profile_id: selectedPharmacyProfile?.id ?? null,
-      expires_at: new Date(Date.now() + 3 * 60 * 1000).toISOString(),
+      expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
     };
 
     const { data, error: insertError } = await supabase
@@ -1775,7 +1781,7 @@ function App() {
     setForm(createEmptyForm());
     setActiveView('history');
     setPublishing(false);
-    setNotice(`Domicilio ${data.public_code} publicado. La oferta vence en 3 minutos.`);
+    setNotice(`Domicilio ${data.public_code} publicado. La oferta vence en 5 minutos.`);
   };
 
   if (!supabase) return <ConfigScreen />;
@@ -1957,7 +1963,7 @@ function App() {
                   </div>
                 </div>
 
-                <div className="form-actions"><span>La oferta quedará disponible durante 3 minutos.</span><button className="primary-button" disabled={publishing || !zone}>{publishing ? 'Publicando…' : 'Publicar domicilio'} <span>→</span></button></div>
+                <div className="form-actions"><span>La oferta quedará disponible durante 5 minutos.</span><button className="primary-button" disabled={publishing || !zone}>{publishing ? 'Publicando…' : 'Publicar domicilio'} <span>→</span></button></div>
               </form>
             </section>
 
@@ -1990,7 +1996,7 @@ function App() {
                 error={courierBreakdownError}
               />
               <div className="info-card"><div className="info-card-header"><span className="section-kicker">Actividad reciente</span><button type="button" onClick={() => setActiveView('history')}>Ver todo →</button></div>{deliveries.slice(0, 3).map((delivery) => <DeliveryRow key={delivery.id} delivery={delivery} couriers={assignedCouriers} onAssign={assignDelivery} onApproveDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, true)} onRejectDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, false)} onOpenChat={(deliveryId) => { selectChatDelivery(deliveryId); setActiveView('history'); }} onOpenEquivalent={(deliveryId) => { selectEquivalentDelivery(deliveryId); setActiveView('history'); }} />)}{deliveries.length === 0 && <EmptyActivity />}</div>
-              <div className="process-card"><span className="section-kicker">Flujo registrado</span><div className="process-step"><span>1</span><div><strong>Publicas</strong><small>Oferta abierta por 3 min</small></div></div><div className="process-line" /><div className="process-step"><span>2</span><div><strong>Se acepta</strong><small>El domiciliario recibe el aviso</small></div></div><div className="process-line" /><div className="process-step"><span>3</span><div><strong>Se entrega</strong><small>El pedido queda registrado</small></div></div></div>
+              <div className="process-card"><span className="section-kicker">Flujo registrado</span><div className="process-step"><span>1</span><div><strong>Publicas</strong><small>Oferta abierta por 5 min</small></div></div><div className="process-line" /><div className="process-step"><span>2</span><div><strong>Se acepta</strong><small>El domiciliario recibe el aviso</small></div></div><div className="process-line" /><div className="process-step"><span>3</span><div><strong>Se entrega</strong><small>El pedido queda registrado</small></div></div></div>
             </aside>
           </div>
         ) : activeView === 'schedule' ? (
