@@ -11,6 +11,173 @@ const supabase = SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY
   ? createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)
   : null;
 
+let webAppServiceWorkerPromise = null;
+
+function getWebPushCapability() {
+  const hasWindow = typeof window !== 'undefined';
+  const browserSupported = hasWindow
+    && 'serviceWorker' in navigator
+    && 'PushManager' in window
+    && 'Notification' in window;
+  const configured = Boolean(import.meta.env.VITE_WEB_PUSH_PUBLIC_KEY);
+  const productionBuild = Boolean(import.meta.env.PROD);
+  const permission = hasWindow && 'Notification' in window ? Notification.permission : 'unsupported';
+  return {
+    browserSupported,
+    configured,
+    productionBuild,
+    supported: browserSupported && configured && productionBuild,
+    permission,
+  };
+}
+
+function getInitialWebPushState() {
+  return {
+    ...getWebPushCapability(),
+    enabled: false,
+    loading: false,
+    message: '',
+    error: '',
+  };
+}
+
+function getWebAppBaseUrl() {
+  return new URL('./', document.baseURI);
+}
+
+async function registerWebAppServiceWorker() {
+  if (typeof window === 'undefined' || !import.meta.env.PROD || !('serviceWorker' in navigator)) return null;
+  if (!webAppServiceWorkerPromise) {
+    const baseUrl = getWebAppBaseUrl();
+    const scope = baseUrl.pathname;
+    const candidates = [
+      new URL('sw.js', baseUrl),
+      new URL('../sw.js', baseUrl),
+      new URL('../../sw.js', baseUrl),
+    ].filter((candidate, index, all) => all.findIndex((item) => item.href === candidate.href) === index);
+    webAppServiceWorkerPromise = (async () => {
+      let lastError = null;
+      for (const candidate of candidates) {
+        try {
+          const response = await fetch(candidate.href, { cache: 'no-store' });
+          if (!response.ok) continue;
+          return await navigator.serviceWorker.register(candidate.href, { scope });
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw lastError || new Error('No se encontró el Service Worker de la web.');
+    })().catch((error) => {
+      webAppServiceWorkerPromise = null;
+      throw error;
+    });
+  }
+  return webAppServiceWorkerPromise;
+}
+
+async function getCurrentWebPushSubscription() {
+  const registration = await registerWebAppServiceWorker();
+  if (!registration?.pushManager) return null;
+  return registration.pushManager.getSubscription();
+}
+
+// Las notificaciones push no deben bloquear la publicación ni el chat. La web
+// sincroniza su suscripción en Supabase solo después de que el usuario concede
+// permiso; así el navegador no muestra un diálogo inesperado al iniciar sesión.
+function triggerPushNotification(body) {
+  if (!supabase) return;
+  void supabase.functions.invoke('send-push-notification', { body }).then(({ error }) => {
+    if (error) console.warn('No se pudo emitir la notificación push:', error.message || error);
+  });
+}
+
+function base64UrlToUint8Array(value) {
+  const padding = '='.repeat((4 - (value.length % 4)) % 4);
+  const base64 = `${value}${padding}`.replace(/-/g, '+').replace(/_/g, '/');
+  const raw = window.atob(base64);
+  return Uint8Array.from([...raw].map((character) => character.charCodeAt(0)));
+}
+
+async function registerWebPushSubscription(userId, { requestPermission = false } = {}) {
+  const capability = getWebPushCapability();
+  const baseState = { ...getInitialWebPushState(), loading: false };
+  const publicKey = import.meta.env.VITE_WEB_PUSH_PUBLIC_KEY;
+  if (!publicKey || !supabase || !userId || !capability.supported) {
+    return {
+      ...baseState,
+      message: !capability.configured
+        ? 'Las alertas en segundo plano todavía no están configuradas por el administrador.'
+        : !capability.productionBuild
+          ? 'Las alertas se activan en la versión publicada de la web.'
+          : !capability.browserSupported
+            ? 'Este navegador no admite alertas Web Push para esta página.'
+            : '',
+    };
+  }
+  try {
+    let permission = Notification.permission;
+    if (permission === 'default' && requestPermission) permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      return {
+        ...baseState,
+        permission,
+        error: permission === 'denied'
+          ? 'El navegador bloqueó las alertas. Actívalas en los permisos del sitio.'
+          : '',
+      };
+    }
+    const registration = await registerWebAppServiceWorker();
+    if (!registration?.pushManager) throw new Error('No se pudo activar el Service Worker.');
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: base64UrlToUint8Array(publicKey),
+      });
+    }
+    const token = JSON.stringify(subscription.toJSON());
+    const { error: tokenError } = await supabase.from('push_tokens').upsert({
+      user_id: userId,
+      token,
+      platform: 'web',
+      active: true,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'token' });
+    if (tokenError) throw tokenError;
+    return {
+      ...baseState,
+      permission,
+      enabled: true,
+      message: 'Alertas en segundo plano activas en este dispositivo.',
+    };
+  } catch (error) {
+    console.warn('No se pudo registrar la notificación web:', error?.message || error);
+    return {
+      ...baseState,
+      error: 'No se pudo activar la alerta. Revisa el permiso del navegador e inténtalo de nuevo.',
+    };
+  }
+}
+
+async function deactivateWebPushSubscription(userId) {
+  if (!supabase || !userId) return false;
+  try {
+    const subscription = await getCurrentWebPushSubscription();
+    if (!subscription) return true;
+    const token = JSON.stringify(subscription.toJSON());
+    const { error } = await supabase
+      .from('push_tokens')
+      .update({ active: false, updated_at: new Date().toISOString() })
+      .eq('user_id', userId)
+      .eq('token', token);
+    if (error) throw error;
+    return true;
+  } catch (error) {
+    console.warn('No se pudo desactivar la alerta web:', error?.message || error);
+    return false;
+  }
+}
+
 const PAYMENT_LABELS = {
   cash: 'Efectivo',
   card: 'Tarjeta',
@@ -159,7 +326,8 @@ function formatTime(value) {
 }
 
 function formatPharmacyDisplay(pharmacy) {
-  const code = String(pharmacy?.code ?? '').trim();
+  const rawCode = String(pharmacy?.code ?? '').trim();
+  const code = rawCode.replace(/^FN\s+/i, '').trim();
   return code ? `farmanorte ${code}` : 'farmanorte';
 }
 
@@ -272,23 +440,31 @@ function normalizeAuthIdentifier(value) {
 function BrandLogo({ inverse = false }) {
   if (inverse) {
     return (
-      <div className="brand-logo-inverse" role="img" aria-label="FarmaNorte">
+      <div className="brand-logo-inverse" role="img" aria-label="farmanorte">
         <svg viewBox="0 0 44 44" aria-hidden="true">
           <circle cx="22" cy="22" r="18.5" fill="none" stroke="currentColor" strokeWidth="2.8" />
           <path d="M15 30V14.5h15M15 21.5h11" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
-        <span>Farmanorte</span>
+        <span>farmanorte</span>
       </div>
     );
   }
 
-  return <img className="brand-logo" src={`${import.meta.env.BASE_URL}farmanorte-logo.png`} alt="FarmaNorte" />;
+  return (
+    <div className="brand-logo brand-logo-wordmark" role="img" aria-label="farmanorte">
+      <svg viewBox="0 0 44 44" aria-hidden="true">
+        <circle cx="22" cy="22" r="18.5" fill="none" stroke="currentColor" strokeWidth="2.8" />
+        <path d="M15 30V14.5h15M15 21.5h11" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      <span>farmanorte</span>
+    </div>
+  );
 }
 
 const HERO_TITLE = 'Cada entrega, siempre registrada.';
 const HERO_COPY = 'Publica, sigue y deja registrado cada domicilio desde el punto de farmacia.';
 
-function LoginHeroCopy() {
+function LoginHeroCopy({ headingId }) {
   const [visibleTitle, setVisibleTitle] = useState('');
   const [visibleCopy, setVisibleCopy] = useState('');
   const [reducedMotion, setReducedMotion] = useState(false);
@@ -359,7 +535,7 @@ function LoginHeroCopy() {
     <>
       <span className="section-kicker">Red de domicilios</span>
       <div className="hero-copy-animated" aria-hidden="true">
-        <h1>{visibleTitle}<span className="hero-caret">|</span></h1>
+        <h1 id={headingId}>{visibleTitle}<span className="hero-caret">|</span></h1>
         <p>{visibleCopy}</p>
       </div>
       <span className="sr-only">{HERO_TITLE} {HERO_COPY}</span>
@@ -448,13 +624,45 @@ function PasswordRecoveryScreen({ onComplete }) {
           <form onSubmit={submit} className="auth-form" aria-busy={submitting}>
             <Field label="Nueva contraseña" required id="recovery-password"><div className="auth-input-shell"><span className="auth-input-icon"><LockIcon /></span><input id="recovery-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Escribe una contraseña segura" autoComplete="new-password" minLength="8" required /></div></Field>
             <Field label="Repite la contraseña" required id="recovery-confirmation"><div className="auth-input-shell"><span className="auth-input-icon"><LockIcon /></span><input id="recovery-confirmation" type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Repite tu contraseña" autoComplete="new-password" required /></div></Field>
-            <button className="primary-button full-width" disabled={submitting}>{submitting ? 'Actualizando…' : 'Guardar contraseña'} <ArrowIcon /></button>
+            <button type="submit" className="primary-button full-width" disabled={submitting}>{submitting ? 'Actualizando…' : 'Guardar contraseña'} <ArrowIcon /></button>
           </form>
           <div className="auth-note"><ShieldIcon /><span>Acceso seguro para personal autorizado</span></div>
         </div>
       </main>
     </div>
   );
+}
+
+function MandatoryPasswordScreen({ profile }) {
+  const [password, setPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setError('');
+    if (password.length < 8) {
+      setError('La nueva contraseña debe tener al menos 8 caracteres.');
+      return;
+    }
+    if (password !== confirmation) {
+      setError('Las contraseñas no coinciden.');
+      return;
+    }
+    setSubmitting(true);
+    const { error: updateError } = await supabase.auth.updateUser({ password });
+    if (!updateError) {
+      const { error: flagError } = await supabase.rpc('complete_password_change');
+      if (flagError) setError(getErrorMessage(flagError));
+      else window.location.reload();
+    } else {
+      setError('No se pudo actualizar la contraseña. Inténtalo nuevamente.');
+    }
+    setSubmitting(false);
+  };
+
+  return <div className="auth-page recovery-page"><div className="auth-aside recovery-aside"><div className="brand-lockup"><BrandLogo inverse /></div><div className="recovery-copy"><span className="section-kicker">SEGURIDAD DE CUENTA</span><h1>Cambia tu contraseña.</h1><p>La contraseña entregada por el administrador es temporal.</p></div><div className="auth-aside-footer">Panel privado para personal autorizado</div></div><main className="auth-main"><div className="auth-form-wrap recovery-card"><span className="section-kicker">PRIMER ACCESO</span><h2>Actualiza tu contraseña</h2><p className="auth-copy">{profile?.full_name || 'Usuario'}, define una contraseña personal para continuar.</p>{error && <div className="inline-alert error-alert" role="alert">{error}</div>}<form onSubmit={submit} className="auth-form" aria-busy={submitting}><Field label="Nueva contraseña" required id="mandatory-password"><div className="auth-input-shell"><span className="auth-input-icon"><LockIcon /></span><input id="mandatory-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Escribe una contraseña segura" autoComplete="new-password" minLength="8" required /></div></Field><Field label="Repite la contraseña" required id="mandatory-password-confirm"><div className="auth-input-shell"><span className="auth-input-icon"><LockIcon /></span><input id="mandatory-password-confirm" type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Repite tu contraseña" autoComplete="new-password" required /></div></Field><button className="primary-button full-width" disabled={submitting}>{submitting ? 'Guardando…' : 'Guardar y continuar'} <ArrowIcon /></button></form><div className="auth-note"><ShieldIcon /><span>La contraseña temporal dejará de funcionar después de este cambio.</span></div></div></main></div>;
 }
 
 function LoginScreen() {
@@ -496,7 +704,54 @@ function LoginScreen() {
     setSubmitting(false);
   };
 
-  return <div className="auth-page"><div className="auth-aside"><div className="brand-lockup"><BrandLogo inverse /></div><div className="auth-quote"><LoginHeroCopy /></div><div className="auth-aside-footer">Panel privado para personal autorizado</div></div><main className="auth-main"><LoginAmbient /><div className="auth-form-wrap"><span className="section-kicker">ACCESO DE FARMACIA</span><h2>Inicia sesión</h2><p className="auth-copy">Ingresa con las credenciales que te asignó el administrador.</p>{error && <div id="login-error" className="inline-alert error-alert" role="alert" aria-live="assertive">{error}</div>}{notice && <div className="inline-alert success-alert" role="status" aria-live="polite">{notice}</div>}<form onSubmit={submit} className="auth-form" aria-busy={submitting}><Field label="Usuario o correo" required id="login-email"><div className="auth-input-shell"><span className="auth-input-icon"><UserIcon /></span><input id="login-email" type="text" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Ingresa tu usuario o correo" autoComplete="username" required aria-describedby={error ? 'login-error' : undefined} /></div></Field><Field label="Contraseña" required id="login-password"><div className="auth-input-shell"><span className="auth-input-icon"><LockIcon /></span><input id="login-password" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Ingresa tu contraseña" autoComplete="current-password" required aria-describedby={error ? 'login-error' : undefined} /><button type="button" className="password-toggle" aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} aria-pressed={showPassword} onMouseDown={(event) => event.preventDefault()} onClick={() => setShowPassword((visible) => !visible)}><EyeIcon hidden={showPassword} /></button></div></Field><div className="auth-recovery-row"><button type="button" className="forgot-link" onClick={requestPasswordReset} disabled={resetting}>{resetting ? 'Enviando instrucciones…' : '¿Olvidaste tu contraseña?'}</button></div><button className="primary-button full-width" disabled={submitting}>{submitting ? 'Verificando acceso…' : 'Entrar al panel'} <ArrowIcon /></button></form><div className="auth-note"><ShieldIcon /><span>Acceso seguro para personal autorizado</span></div></div></main></div>;
+  return (
+    <div className="pharmacy-login-page">
+      <div className="pharmacy-login-shell">
+        <section className="pharmacy-login-hero" aria-labelledby="pharmacy-login-hero-title">
+          <div className="pharmacy-login-hero-orbit pharmacy-login-hero-orbit-one" />
+          <div className="pharmacy-login-hero-orbit pharmacy-login-hero-orbit-two" />
+          <div className="pharmacy-login-hero-route" aria-hidden="true" />
+          <div className="pharmacy-login-brand">
+            <BrandLogo inverse />
+            <span className="pharmacy-login-brand-subtitle">RED DE DOMICILIOS</span>
+          </div>
+          <div className="pharmacy-login-hero-copy">
+            <LoginHeroCopy headingId="pharmacy-login-hero-title" />
+          </div>
+        </section>
+
+        <main className="pharmacy-login-main">
+          <LoginAmbient />
+          <div className="auth-form-wrap pharmacy-login-card">
+            <span className="section-kicker">ACCESO DE FARMACIA</span>
+            <h2>Inicia sesión</h2>
+            <p className="auth-copy">Ingresa con las credenciales que te asignó el administrador.</p>
+            {error && <div id="login-error" className="inline-alert error-alert" role="alert" aria-live="assertive">{error}</div>}
+            {notice && <div className="inline-alert success-alert" role="status" aria-live="polite">{notice}</div>}
+            <form onSubmit={submit} className="auth-form" aria-busy={submitting}>
+              <Field label="Usuario o correo" required id="login-email">
+                <div className="auth-input-shell">
+                  <span className="auth-input-icon"><UserIcon /></span>
+                  <input id="login-email" type="text" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Ingresa tu usuario o correo" autoComplete="username" required aria-describedby={error ? 'login-error' : undefined} />
+                </div>
+              </Field>
+              <Field label="Contraseña" required id="login-password">
+                <div className="auth-input-shell">
+                  <span className="auth-input-icon"><LockIcon /></span>
+                  <input id="login-password" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Ingresa tu contraseña" autoComplete="current-password" required aria-describedby={error ? 'login-error' : undefined} />
+                  <button type="button" className="password-toggle" aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} aria-pressed={showPassword} onMouseDown={(event) => event.preventDefault()} onClick={() => setShowPassword((visible) => !visible)}><EyeIcon hidden={showPassword} /></button>
+                </div>
+              </Field>
+              <div className="auth-recovery-row"><button type="button" className="forgot-link" onClick={requestPasswordReset} disabled={resetting}>{resetting ? 'Enviando instrucciones…' : '¿Olvidaste tu contraseña?'}</button></div>
+              <button className="primary-button full-width" disabled={submitting}>{submitting ? 'Verificando acceso…' : 'Entrar al panel'} <ArrowIcon /></button>
+            </form>
+            <div className="auth-note"><ShieldIcon /><span>Acceso seguro para personal autorizado</span></div>
+          </div>
+        </main>
+        <p className="pharmacy-login-footer">Panel privado para personal autorizado</p>
+      </div>
+    </div>
+  );
 }
 
 function PharmacyProfileChooser({ pharmacy, profiles, onSelect, onSignOut }) {
@@ -566,7 +821,14 @@ function App() {
   const [availablePharmacies, setAvailablePharmacies] = useState([]);
   const [zone, setZone] = useState(null);
   const [zoneCouriers, setZoneCouriers] = useState([]);
+  const [weeklyZoneCouriers, setWeeklyZoneCouriers] = useState([]);
   const [deliveries, setDeliveries] = useState([]);
+  const [customerMatches, setCustomerMatches] = useState([]);
+  const [customerAddresses, setCustomerAddresses] = useState([]);
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
+  const [courierBreakdown, setCourierBreakdown] = useState([]);
+  const [courierBreakdownError, setCourierBreakdownError] = useState('');
   const [loading, setLoading] = useState(Boolean(supabase));
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -575,6 +837,13 @@ function App() {
   const [equivalentDeliveryId, setEquivalentDeliveryId] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [publishing, setPublishing] = useState(false);
+  const [webPushState, setWebPushState] = useState(getInitialWebPushState);
+
+  useEffect(() => {
+    void registerWebAppServiceWorker().catch((serviceWorkerError) => {
+      console.warn('No se pudo preparar la PWA:', serviceWorkerError?.message || serviceWorkerError);
+    });
+  }, []);
 
   useEffect(() => {
     if (!supabase) {
@@ -595,7 +864,13 @@ function App() {
       setAvailablePharmacies([]);
       setZone(null);
       setZoneCouriers([]);
+      setWeeklyZoneCouriers([]);
       setDeliveries([]);
+      setCustomerMatches([]);
+      setCustomerAddresses([]);
+      setSelectedCustomerId('');
+      setCourierBreakdown([]);
+      setCourierBreakdownError('');
       setChatDeliveryId(null);
       setEquivalentDeliveryId(null);
     };
@@ -609,7 +884,7 @@ function App() {
 
       const { data: profileData, error: profileError } = await supabase
         .from('profiles')
-        .select('id, full_name, role, pharmacy_code, phone, active')
+        .select('id, full_name, role, pharmacy_code, phone, active, must_change_password')
         .eq('id', userId)
         .maybeSingle();
 
@@ -626,11 +901,19 @@ function App() {
       }
       setProfile(profileData);
 
+      if (profileData.must_change_password) {
+        setLoading(false);
+        return;
+      }
+
       if (!profileData.active) {
         setError('Este usuario está inactivo. Contacta al administrador.');
         setLoading(false);
         return;
       }
+      void registerWebPushSubscription(userId).then((pushState) => {
+        if (isCurrent()) setWebPushState(pushState);
+      });
       if (profileData.role !== 'pharmacy') {
         setError(`Esta página es para usuarios de farmacia. Tu rol actual es ${profileData.role}.`);
         setLoading(false);
@@ -686,6 +969,21 @@ function App() {
       }
       setPharmacy(pharmacyData);
 
+      const loadCourierBreakdown = async (pharmacyCode) => {
+        const { data: breakdownData, error: breakdownError } = await supabase.rpc(
+          'get_pharmacy_courier_breakdown',
+          { requested_pharmacy_code: pharmacyCode },
+        );
+        if (!isCurrent()) return;
+        if (breakdownError) {
+          setCourierBreakdown([]);
+          setCourierBreakdownError(getErrorMessage(breakdownError));
+          return;
+        }
+        setCourierBreakdown(breakdownData ?? []);
+        setCourierBreakdownError('');
+      };
+
       const { data: pharmacyCatalog, error: pharmacyCatalogError } = await supabase
         .from('pharmacies')
         .select('code, name, zone_name, active')
@@ -717,22 +1015,34 @@ function App() {
       const loadZoneCouriers = async () => {
         if (!directZone?.id) {
           setZoneCouriers([]);
+          setWeeklyZoneCouriers([]);
           return;
         }
-        const { data: courierData, error: courierError } = await supabase.rpc(
+        const today = new Date();
+        const monday = new Date(today);
+        monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+        const weekDates = Array.from({ length: 7 }, (_, index) => {
+          const date = new Date(monday);
+          date.setDate(monday.getDate() + index);
+          return localDateIso(date);
+        });
+        const weekResponses = await Promise.all(weekDates.map((date) => supabase.rpc(
           'get_pharmacy_zone_couriers',
-          {
-            requested_zone_id: directZone.id,
-            requested_date: localDateIso(),
-          },
-        );
+          { requested_zone_id: directZone.id, requested_date: date },
+        )));
         if (!isCurrent()) return;
-        if (courierError) {
+        const currentDate = localDateIso();
+        const todayResponse = weekResponses[weekDates.indexOf(currentDate)] || {};
+        const firstError = weekResponses.find((response) => response.error)?.error;
+        if (firstError) {
           setZoneCouriers([]);
-          setError(getErrorMessage(courierError));
+          setWeeklyZoneCouriers([]);
+          setError(getErrorMessage(firstError));
           return;
         }
-        setZoneCouriers(courierData ?? []);
+        const weeklyRows = weekResponses.flatMap((response) => response.data ?? []);
+        setZoneCouriers(todayResponse.data ?? []);
+        setWeeklyZoneCouriers(weeklyRows);
       };
 
       await loadZoneCouriers();
@@ -750,7 +1060,17 @@ function App() {
         setError(getErrorMessage(deliveriesError));
       } else {
         setDeliveries(deliveryData ?? []);
+        const query = new URLSearchParams(window.location.search);
+        const notificationDeliveryId = query.get('delivery');
+        if (notificationDeliveryId && (deliveryData ?? []).some((item) => item.id === notificationDeliveryId)) {
+          const opensChat = query.get('chat') === '1';
+          setActiveView('history');
+          setChatDeliveryId(opensChat ? notificationDeliveryId : null);
+          setEquivalentDeliveryId(null);
+          window.history.replaceState({}, '', window.location.pathname);
+        }
       }
+      await loadCourierBreakdown(pharmacyData.code);
       setLoading(false);
 
       const knownDeliveryIds = new Set((deliveryData ?? []).map((item) => item.id));
@@ -787,7 +1107,18 @@ function App() {
                 (left, right) => new Date(right.created_at) - new Date(left.created_at),
               ).slice(0, 30);
             });
+            void loadCourierBreakdown(pharmacyData.code);
           },
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'delivery_equivalents',
+            filter: `pharmacy_code=eq.${pharmacyData.code}`,
+          },
+          () => void loadCourierBreakdown(pharmacyData.code),
         )
         .on(
           'postgres_changes',
@@ -844,7 +1175,11 @@ function App() {
 
     const { data: authListener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (event === 'PASSWORD_RECOVERY') setRecoveryMode(true);
-      if (event === 'SIGNED_OUT') setRecoveryMode(false);
+      if (event === 'SIGNED_OUT') {
+        setRecoveryMode(false);
+        void deactivateWebPushSubscription(lastUserId);
+        setWebPushState(getInitialWebPushState());
+      }
       applySession(nextSession);
     });
 
@@ -858,11 +1193,22 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return undefined;
+    const handleServiceWorkerMessage = (event) => {
+      if (event.data?.type !== 'farmanorte-pushsubscriptionchange' || !session?.user?.id) return;
+      void registerWebPushSubscription(session.user.id).then(setWebPushState);
+    };
+    navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
+  }, [session?.user?.id]);
+
   const signOut = async () => {
     if (!supabase) return;
     setError('');
     setNotice('');
     try {
+      await deactivateWebPushSubscription(session?.user?.id);
       const { error: signOutError } = await supabase.auth.signOut();
       if (signOutError) {
         setError(`No se pudo cerrar sesión: ${getErrorMessage(signOutError)}`);
@@ -879,13 +1225,41 @@ function App() {
       setZone(null);
       setZoneCouriers([]);
       setDeliveries([]);
+      setCourierBreakdown([]);
+      setCourierBreakdownError('');
       setChatDeliveryId(null);
       setEquivalentDeliveryId(null);
       setForm(createEmptyForm());
       setActiveView('publish');
+      setWebPushState(getInitialWebPushState());
     } catch (signOutException) {
       setError(`No se pudo cerrar sesión: ${getErrorMessage(signOutException)}`);
     }
+  };
+
+  const enableWebPush = async () => {
+    if (!session?.user?.id) return;
+    setWebPushState((current) => ({ ...current, loading: true, error: '', message: '' }));
+    const nextState = await registerWebPushSubscription(session.user.id, { requestPermission: true });
+    setWebPushState(nextState);
+    if (nextState.enabled) {
+      setNotice(nextState.message);
+    } else if (nextState.error) {
+      setError(nextState.error);
+    }
+  };
+
+  const disableWebPush = async () => {
+    if (!session?.user?.id) return;
+    setWebPushState((current) => ({ ...current, loading: true, error: '', message: '' }));
+    const disabled = await deactivateWebPushSubscription(session.user.id);
+    const capability = getWebPushCapability();
+    setWebPushState({
+      ...getInitialWebPushState(),
+      ...capability,
+      message: disabled ? 'Alertas desactivadas en este dispositivo.' : '',
+      error: disabled ? '' : 'No se pudo desactivar la alerta. Inténtalo de nuevo.',
+    });
   };
 
   const choosePharmacyProfile = (nextProfile) => {
@@ -912,6 +1286,25 @@ function App() {
     }
     const courier = assignedCouriers.find((item) => item.courier_id === courierId);
     setNotice(`Domicilio reasignado a ${courier?.full_name || 'el domiciliario seleccionado'}.`);
+    return true;
+  };
+
+  const respondToDeliveryApproval = async (deliveryId, approved) => {
+    if (!supabase || !deliveryId) return false;
+    setError('');
+    setNotice('');
+    const functionName = approved ? 'approve_delivery_request' : 'reject_delivery_request';
+    const { error: approvalError } = await supabase.rpc(functionName, {
+      requested_delivery_id: deliveryId,
+    });
+    if (approvalError) {
+      setError(getErrorMessage(approvalError));
+      return false;
+    }
+    setDeliveries((current) => current.map((item) => item.id === deliveryId
+      ? { ...item, approval_pending: false, ...(approved ? { status: 'accepted' } : {}) }
+      : item));
+    setNotice(approved ? 'Segundo domicilio aprobado.' : 'Solicitud de segundo domicilio rechazada.');
     return true;
   };
 
@@ -946,8 +1339,78 @@ function App() {
     .map((stop) => `${pharmacyLabel(stop.originPharmacyCode)} → ${pharmacyLabel(stop.destinationPharmacyCode)}`)
     .join(' · ');
 
+  useEffect(() => {
+    const phone = form.clientPhone.replace(/\D/g, '');
+    if (!supabase || phone.length !== 10) {
+      setCustomerMatches([]);
+      setCustomerAddresses([]);
+      setSelectedCustomerId('');
+      return undefined;
+    }
+    let cancelled = false;
+    setCustomerLookupLoading(true);
+    const loadMatches = async () => {
+      const { data, error: lookupError } = await supabase
+        .from('customers')
+        .select('id, first_name, last_name, phone')
+        .eq('phone', phone)
+        .eq('active', true)
+        .order('created_at');
+      if (cancelled) return;
+      if (lookupError) {
+        setCustomerMatches([]);
+        setCustomerAddresses([]);
+        setCustomerLookupLoading(false);
+        return;
+      }
+      const matches = data ?? [];
+      setCustomerMatches(matches);
+      if (matches.length === 1) {
+        const match = matches[0];
+        setSelectedCustomerId(match.id);
+        if (!form.clientName.trim()) {
+          setForm((current) => ({
+            ...current,
+            clientName: `${match.first_name || ''} ${match.last_name || ''}`.trim(),
+          }));
+        }
+        const { data: addresses } = await supabase
+          .from('customer_addresses')
+          .select('id, label, address, neighborhood, address_reference, is_default')
+          .eq('customer_id', match.id)
+          .eq('active', true)
+          .order('is_default', { ascending: false });
+        if (!cancelled) setCustomerAddresses(addresses ?? []);
+      } else {
+        setSelectedCustomerId('');
+        setCustomerAddresses([]);
+      }
+      setCustomerLookupLoading(false);
+    };
+    void loadMatches();
+    return () => { cancelled = true; };
+  }, [form.clientPhone]);
+
+  const chooseCustomer = async (customer) => {
+    setSelectedCustomerId(customer.id);
+    setForm((current) => ({
+      ...current,
+      clientName: `${customer.first_name || ''} ${customer.last_name || ''}`.trim(),
+      address: '',
+    }));
+    const { data: addresses } = await supabase
+      .from('customer_addresses')
+      .select('id, label, address, neighborhood, address_reference, is_default')
+      .eq('customer_id', customer.id)
+      .eq('active', true)
+      .order('is_default', { ascending: false });
+    setCustomerAddresses(addresses ?? []);
+  };
+
   const updateServiceType = (serviceType) => {
     const nextServiceType = getServiceTypeConfig(serviceType);
+    setSelectedCustomerId('');
+    setCustomerAddresses([]);
     setForm((current) => ({
       ...current,
       serviceType: nextServiceType.value,
@@ -1027,6 +1490,10 @@ function App() {
         setError(`Número incompleto: te faltan ${Math.max(0, 10 - phoneDigits.length)} números.`);
         return;
       }
+      if (!phoneDigits.startsWith('3')) {
+        setError('El número debe empezar por 3 y tener exactamente 10 números en Colombia.');
+        return;
+      }
       if (form.address.trim().length < 8) {
         setError('Completa una dirección válida con barrio, nomenclatura o manzana y una referencia.');
         return;
@@ -1069,6 +1536,26 @@ function App() {
     setError('');
     setNotice('');
     const productSummary = buildProductSummary(form);
+    let customerId = null;
+    let customerAddressId = null;
+    if (requiresClient) {
+      const { data: customerRows, error: customerError } = await supabase.rpc(
+        'upsert_customer_contact',
+        {
+          requested_name: form.clientName.trim(),
+          requested_phone: form.clientPhone.trim(),
+          requested_address: form.address.trim(),
+        },
+      );
+      if (customerError) {
+        setError(`No se pudo guardar el cliente: ${getErrorMessage(customerError)}`);
+        setPublishing(false);
+        return;
+      }
+      const customerRow = Array.isArray(customerRows) ? customerRows[0] : customerRows;
+      customerId = customerRow?.customer_id || null;
+      customerAddressId = customerRow?.customer_address_id || null;
+    }
     const deliveryTasks = buildDeliveryTasks(form);
     const { count: pharmacyDeliveryCount, error: codeCountError } = await supabase
       .from('deliveries')
@@ -1106,8 +1593,8 @@ function App() {
       status: 'offered',
       client_name: requiresClient ? form.clientName.trim() : '',
       client_phone: requiresClient ? form.clientPhone.trim() : '',
-      customer_id: null,
-      customer_address_id: null,
+      customer_id: customerId,
+      customer_address_id: customerAddressId,
       neighborhood: requiresClient ? form.address.trim() : pharmacy.name,
       address: requiresClient ? form.address.trim() : routeLabel || `Operación interna de ${pharmacy.name}`,
       address_reference: requiresClient ? '' : 'Operación interna entre farmacias o compra externa.',
@@ -1155,6 +1642,8 @@ function App() {
       }
     }
 
+    triggerPushNotification({ event: 'delivery_created', delivery_id: data.id });
+
     setForm(createEmptyForm());
     setActiveView('history');
     setPublishing(false);
@@ -1164,6 +1653,7 @@ function App() {
   if (!supabase) return <ConfigScreen />;
   if (recoveryMode && session) return <PasswordRecoveryScreen onComplete={() => { setRecoveryMode(false); window.history.replaceState({}, '', window.location.pathname); }} />;
   if (!session) return <LoginScreen />;
+  if (profile?.must_change_password) return <MandatoryPasswordScreen profile={profile} />;
   if (error && (!profile || profile.role !== 'pharmacy' || !pharmacy)) {
     return <AccessProblem error={error} onSignOut={signOut} />;
   }
@@ -1205,14 +1695,22 @@ function App() {
 
         <div className="sidebar-section-label">Módulo farmacia</div>
         <nav className="main-nav" aria-label="Navegación principal">
-          <button className={activeView === 'publish' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('publish')}>
+          <button type="button" className={activeView === 'publish' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('publish')}>
             <span className="nav-icon">＋</span>
             <span>Publicar domicilio</span>
           </button>
-          <button className={activeView === 'history' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('history')}>
+          <button type="button" className={activeView === 'history' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('history')}>
             <span className="nav-icon">◷</span>
             <span>Pedidos</span>
             <span className="nav-count">{deliveries.length}</span>
+          </button>
+          <button type="button" className={activeView === 'schedule' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('schedule')}>
+            <span className="nav-icon">▦</span>
+            <span>Turnos</span>
+          </button>
+          <button type="button" className={activeView === 'settings' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('settings')}>
+            <span className="nav-icon">⚙</span>
+            <span>Ajustes</span>
           </button>
         </nav>
 
@@ -1233,7 +1731,7 @@ function App() {
           <div>
             <p className="welcome-line">Bienvenido, {firstName}</p>
             <p className="eyebrow">Panel de farmacia <span className="live-pill">EN VIVO</span></p>
-            <h1>{activeView === 'publish' ? 'Nuevo domicilio' : 'Pedidos'}</h1>
+            <h1>{activeView === 'publish' ? 'Nuevo domicilio' : activeView === 'history' ? 'Pedidos' : activeView === 'schedule' ? 'Turnos de la semana' : 'Ajustes'}</h1>
           </div>
           <div className="operator-info">
             <div className="operator-avatar">{(operatorName || 'F').slice(0, 1).toUpperCase()}</div>
@@ -1255,8 +1753,8 @@ function App() {
           </div>
         </header>
 
-        {error && <div className="inline-alert error-alert" role="alert">{error}<button aria-label="Cerrar error" onClick={() => setError('')}>×</button></div>}
-        {notice && <div className="inline-alert success-alert" role="status">{notice}<button aria-label="Cerrar aviso" onClick={() => setNotice('')}>×</button></div>}
+        {error && <div className="inline-alert error-alert" role="alert">{error}<button type="button" aria-label="Cerrar error" onClick={() => setError('')}>×</button></div>}
+        {notice && <div className="inline-alert success-alert" role="status">{notice}<button type="button" aria-label="Cerrar aviso" onClick={() => setNotice('')}>×</button></div>}
 
         {activeView === 'publish' ? (
           <div className="workspace-grid">
@@ -1285,7 +1783,7 @@ function App() {
                   <div className="form-section-title"><span>02</span><div><strong>Cliente y ubicación</strong><small>Solo necesitamos nombre, teléfono y dirección completa.</small></div></div>
                   <div className="field-grid three-columns customer-fields">
                     <Field label="Nombre del cliente" required><input value={form.clientName} onChange={(event) => setForm({ ...form, clientName: event.target.value })} placeholder="Nombre completo" autoComplete="name" /></Field>
-                    <Field label="Teléfono" required><input value={form.clientPhone} onChange={(event) => setForm({ ...form, clientPhone: event.target.value.replace(/\D/g, '').slice(0, 10) })} placeholder="3000000000" inputMode="numeric" maxLength={10} autoComplete="tel" aria-describedby="client-phone-help" aria-invalid={Boolean(form.clientPhone && form.clientPhone.length !== 10)} /><small id="client-phone-help" className="field-help">{form.clientPhone ? form.clientPhone.length === 10 ? 'Número completo.' : `Número incompleto: te faltan ${10 - form.clientPhone.length}.` : 'Debe tener exactamente 10 números.'}</small></Field>
+                    <Field label="Teléfono" required><input value={form.clientPhone} onChange={(event) => setForm({ ...form, clientPhone: event.target.value.replace(/\D/g, '').slice(0, 10) })} placeholder="3000000000" inputMode="numeric" maxLength={10} autoComplete="tel" aria-describedby="client-phone-help" aria-invalid={Boolean(form.clientPhone && (form.clientPhone.length !== 10 || !form.clientPhone.startsWith('3')))} /><small id="client-phone-help" className="field-help">{form.clientPhone ? form.clientPhone.length !== 10 ? `Número incompleto: te faltan ${10 - form.clientPhone.length}.` : form.clientPhone.startsWith('3') ? 'Número completo.' : 'Debe empezar por 3.' : 'Debe empezar por 3 y tener exactamente 10 números.'}</small>{customerLookupLoading && <small className="field-help">Buscando cliente registrado…</small>}{customerMatches.length > 1 && <div className="customer-picker"><span>Este teléfono tiene varios clientes</span>{customerMatches.map((customer) => <button type="button" key={customer.id} className={selectedCustomerId === customer.id ? 'customer-choice active' : 'customer-choice'} onClick={() => chooseCustomer(customer)}>{`${customer.first_name || ''} ${customer.last_name || ''}`.trim() || 'Cliente registrado'}</button>)}</div>}{selectedCustomerId && customerAddresses.length > 0 && <label className="saved-address-picker"><span>Dirección guardada</span><select value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })}><option value="">Selecciona una dirección</option>{customerAddresses.map((address) => <option key={address.id} value={address.address}>{address.label || address.address}</option>)}</select></label>}</Field>
                     <Field label="Dirección completa" required><textarea className="address-field" value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} placeholder="Barrio, manzana/calle/carrera y referencia de llegada" rows="2" autoComplete="street-address" aria-describedby="address-help" aria-invalid={Boolean(form.address && form.address.trim().length < 8)} /><small id="address-help" className="field-help">{form.address ? form.address.trim().length < 8 ? 'Dirección incompleta: agrega barrio y referencia.' : 'Dirección lista para publicar.' : 'Incluye barrio, nomenclatura o manzana y una referencia.'}</small></Field>
                   </div>
                 </div>}
@@ -1321,7 +1819,6 @@ function App() {
                   <div className="request-summary">
                     <div><span>Operación</span><strong>{form.serviceType}</strong></div>
                     {requiresClient && <><div><span>Cliente</span><strong>{form.clientName || 'Sin nombre'}</strong><small>{form.clientPhone || 'Sin teléfono'}</small></div><div><span>Destino</span><strong>{form.address || 'Sin dirección'}</strong></div></>}
-                    {!requiresClient && selectedServiceType.requiresCross && <><div><span>Farmacia que solicita</span><strong>{formatPharmacyOption(pharmacy)}</strong></div><div><span>Farmacia solicitada</span><strong>{form.crossStops.length === 1 && form.crossStops[0]?.destinationPharmacyCode ? pharmacyLabel(form.crossStops[0].destinationPharmacyCode) : form.crossStops.length ? `${form.crossStops.length} destinos` : 'Sin destino'}</strong></div></>}
                     {selectedServiceType.requiresPurchase && <><div><span>Lugar de compra</span><strong>{form.purchaseItems[0]?.merchant || 'Sin comercio'}</strong></div><div><span>Sede o barrio</span><strong>{form.purchaseItems[0]?.branch || 'Sin sede'}</strong></div><div><span>Total de compras</span><strong>{form.purchaseItems.length}</strong></div></>}
                     {selectedServiceType.requiresCross && <div><span>Ruta del cruce</span><strong>{crossPreview || 'Sin ruta'}</strong><small>Total de cruces: {form.crossStops.length}</small></div>}
                     {requiresPayment && <div><span>Pago</span><strong>{PAYMENT_LABELS[form.paymentMethod]} · {form.paymentAmount ? formatMoney(form.paymentAmount) : 'Sin total'}</strong>{form.paymentMethod === 'cash' && cashChange !== null && cashChange >= 0 && <small>Vuelto: {formatMoney(cashChange)}</small>}</div>}
@@ -1355,10 +1852,32 @@ function App() {
                   </div>
                 ) : <p className="empty-zone-couriers">No hay un domiciliario programado para esta zona hoy.</p>}
               </div>
-              <div className="info-card"><div className="info-card-header"><span className="section-kicker">Actividad reciente</span><button onClick={() => setActiveView('history')}>Ver todo →</button></div>{deliveries.slice(0, 3).map((delivery) => <DeliveryRow key={delivery.id} delivery={delivery} couriers={assignedCouriers} onAssign={assignDelivery} onOpenChat={(deliveryId) => { selectChatDelivery(deliveryId); setActiveView('history'); }} onOpenEquivalent={(deliveryId) => { selectEquivalentDelivery(deliveryId); setActiveView('history'); }} />)}{deliveries.length === 0 && <EmptyActivity />}</div>
+              <WeeklyCourierSchedule rows={weeklyZoneCouriers} />
+              <CourierBreakdownCard
+                breakdown={courierBreakdown}
+                error={courierBreakdownError}
+              />
+              <div className="info-card"><div className="info-card-header"><span className="section-kicker">Actividad reciente</span><button type="button" onClick={() => setActiveView('history')}>Ver todo →</button></div>{deliveries.slice(0, 3).map((delivery) => <DeliveryRow key={delivery.id} delivery={delivery} couriers={assignedCouriers} onAssign={assignDelivery} onApproveDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, true)} onRejectDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, false)} onOpenChat={(deliveryId) => { selectChatDelivery(deliveryId); setActiveView('history'); }} onOpenEquivalent={(deliveryId) => { selectEquivalentDelivery(deliveryId); setActiveView('history'); }} />)}{deliveries.length === 0 && <EmptyActivity />}</div>
               <div className="process-card"><span className="section-kicker">Flujo registrado</span><div className="process-step"><span>1</span><div><strong>Publicas</strong><small>Oferta abierta por 3 min</small></div></div><div className="process-line" /><div className="process-step"><span>2</span><div><strong>Se acepta</strong><small>El domiciliario recibe el aviso</small></div></div><div className="process-line" /><div className="process-step"><span>3</span><div><strong>Se entrega</strong><small>El pedido queda registrado</small></div></div></div>
             </aside>
           </div>
+        ) : activeView === 'schedule' ? (
+          <PharmacyScheduleView
+            pharmacy={pharmacy}
+            rows={weeklyZoneCouriers}
+            breakdown={courierBreakdown}
+            breakdownError={courierBreakdownError}
+          />
+        ) : activeView === 'settings' ? (
+          <PharmacySettingsView
+            pharmacy={pharmacy}
+            profile={operatorProfile}
+            profiles={pharmacyProfiles}
+            webPushState={webPushState}
+            onEnableWebPush={enableWebPush}
+            onDisableWebPush={disableWebPush}
+            onSignOut={signOut}
+          />
         ) : (
           <HistoryView
             deliveries={deliveries}
@@ -1371,6 +1890,10 @@ function App() {
             onOpenEquivalent={selectEquivalentDelivery}
             couriers={assignedCouriers}
             onAssign={assignDelivery}
+            onApproveDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, true)}
+            onRejectDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, false)}
+            courierBreakdown={courierBreakdown}
+            courierBreakdownError={courierBreakdownError}
           />
         )}
       </main>
@@ -1384,13 +1907,15 @@ function Field({ label, required, id, children }) {
   return <div className="field"><label className="field-label" htmlFor={id}>{labelContent}</label>{children}</div>;
 }
 
-function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], onAssign }) {
+function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], onAssign, onApproveDelivery, onRejectDelivery }) {
   const [assignmentOpen, setAssignmentOpen] = useState(false);
   const [selectedCourierId, setSelectedCourierId] = useState('');
   const [assigning, setAssigning] = useState(false);
+  const [approvalAction, setApprovalAction] = useState('');
   const [statusLabel, statusClass] = DELIVERY_STATUS[delivery.status] || ['Sin estado', 'status-cancelled'];
   const isTerminal = delivery.status === 'delivered' || delivery.status === 'notDelivered';
   const canAssign = Boolean(onAssign && couriers.length > 0 && ['offered', 'accepted'].includes(delivery.status));
+  const assignmentControlsId = `delivery-assignment-${delivery.id}`;
   const submitAssignment = async () => {
     if (!selectedCourierId || !onAssign) return;
     setAssigning(true);
@@ -1401,20 +1926,233 @@ function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], on
     }
     setAssigning(false);
   };
-  return <div className="delivery-row"><div className="delivery-row-main"><strong>{delivery.public_code || delivery.id?.slice(0, 8)}</strong><span>{delivery.client_name || 'Operación interna'} · {delivery.neighborhood || 'Sin destino'}</span></div><div className="delivery-row-side"><span className={`status-badge ${statusClass}`}>{statusLabel}</span><small>{formatDate(delivery.created_at)}</small><div className="delivery-row-actions">{onOpenChat && <button type="button" className="delivery-chat-button" onClick={() => onOpenChat(delivery.id)}>Abrir chat</button>}{canAssign && <button type="button" className="delivery-equivalent-button" onClick={() => setAssignmentOpen((open) => !open)}>{assignmentOpen ? 'Cerrar' : 'Asignar'}</button>}{onOpenEquivalent && isTerminal && <button type="button" className="delivery-equivalent-button" onClick={() => onOpenEquivalent(delivery.id)}>Equivalente</button>}</div>{assignmentOpen && <div className="delivery-assignment-controls"><label><span>Asignar a</span><select value={selectedCourierId} onChange={(event) => setSelectedCourierId(event.target.value)}><option value="">Selecciona un domiciliario</option>{couriers.map((courier) => <option key={courier.courier_id} value={courier.courier_id}>{courier.full_name || 'Domiciliario'}{courier.is_support ? ' · Apoyo general' : ''}</option>)}</select></label><button type="button" className="primary-button compact-button" disabled={!selectedCourierId || assigning} onClick={submitAssignment}>{assigning ? 'Guardando…' : 'Confirmar'}</button></div>}</div></div>;
+  const respondToApproval = async (approved) => {
+    const handler = approved ? onApproveDelivery : onRejectDelivery;
+    if (!handler || approvalAction) return;
+    setApprovalAction(approved ? 'approve' : 'reject');
+    await handler(delivery.id);
+    setApprovalAction('');
+  };
+  return (
+    <div className="delivery-row">
+      <div className="delivery-row-main">
+        <strong>{delivery.public_code || delivery.id?.slice(0, 8)}</strong>
+        <span>{delivery.client_name || 'Operación interna'} · {delivery.neighborhood || 'Sin destino'}</span>
+      </div>
+      <div className="delivery-row-side">
+        <div className="delivery-row-status">
+          <span className={`status-badge ${statusClass}`}>{statusLabel}</span>
+          {delivery.accepted_courier_id && (
+            <span className={delivery.assigned_as_support ? 'assignment-badge support' : 'assignment-badge'}>
+              {delivery.assigned_as_support ? 'Apoyo' : 'Base'}
+            </span>
+          )}
+        </div>
+        <small>{formatDate(delivery.created_at)}</small>
+        {delivery.approval_pending && <div className="approval-request"><strong>{delivery.approval_courier_name || 'Un domiciliario'} solicita un segundo domicilio.</strong><div><button type="button" className="secondary-button compact-button" disabled={Boolean(approvalAction)} onClick={() => respondToApproval(false)}>{approvalAction === 'reject' ? 'Rechazando…' : 'Rechazar'}</button><button type="button" className="primary-button compact-button" disabled={Boolean(approvalAction)} onClick={() => respondToApproval(true)}>{approvalAction === 'approve' ? 'Aprobando…' : 'Aprobar'}</button></div></div>}
+        <div className="delivery-row-actions">
+          {onOpenChat && <button type="button" className="delivery-chat-button" onClick={() => onOpenChat(delivery.id)}>Abrir chat</button>}
+          {canAssign && <button type="button" className="delivery-equivalent-button" aria-expanded={assignmentOpen} aria-controls={assignmentControlsId} onClick={() => setAssignmentOpen((open) => !open)}>{assignmentOpen ? 'Cerrar' : 'Asignar'}</button>}
+          {onOpenEquivalent && isTerminal && <button type="button" className="delivery-equivalent-button" onClick={() => onOpenEquivalent(delivery.id)}>Equivalente</button>}
+        </div>
+        {assignmentOpen && <div id={assignmentControlsId} className="delivery-assignment-controls"><label><span>Asignar a</span><select value={selectedCourierId} onChange={(event) => setSelectedCourierId(event.target.value)}><option value="">Selecciona un domiciliario</option>{couriers.map((courier) => <option key={courier.courier_id} value={courier.courier_id}>{courier.full_name || 'Domiciliario'}{courier.is_support ? ' · Apoyo general' : ''}</option>)}</select></label><button type="button" className="primary-button compact-button" disabled={!selectedCourierId || assigning} onClick={submitAssignment}>{assigning ? 'Guardando…' : 'Confirmar'}</button></div>}
+      </div>
+    </div>
+  );
 }
 
 function EmptyActivity() {
   return <div className="empty-activity"><span>⌁</span><p>Aún no hay domicilios publicados.</p><small>Los nuevos aparecerán aquí en tiempo real.</small></div>;
 }
 
-function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliveryId, onOpenChat, selectedEquivalentDeliveryId, onOpenEquivalent, couriers, onAssign }) {
+function WeeklyCourierSchedule({ rows }) {
+  const groups = useMemo(() => {
+    const grouped = new Map();
+    for (const row of rows) {
+      const date = String(row.scheduled_for || '').slice(0, 10);
+      if (!date) continue;
+      if (!grouped.has(date)) grouped.set(date, []);
+      grouped.get(date).push(row);
+    }
+    return [...grouped.entries()].sort(([left], [right]) => left.localeCompare(right));
+  }, [rows]);
+
+  return <section className="info-card weekly-couriers-card">
+    <div className="info-card-header">
+      <span className="section-kicker">Turnos publicados</span>
+      <span className="live-pill">Lunes a domingo</span>
+    </div>
+    <h3>Quién cubre esta zona</h3>
+    {groups.length === 0 ? <p className="empty-zone-couriers">No hay turnos publicados para esta semana.</p> : <div className="weekly-courier-groups">
+      {groups.map(([date, couriers]) => <div className="weekly-courier-day" key={date}>
+        <div className="weekly-courier-day-heading">
+          <strong>{new Intl.DateTimeFormat('es-CO', { weekday: 'long', day: '2-digit', month: 'short' }).format(new Date(`${date}T12:00:00`))}</strong>
+          <span>{couriers.length} {couriers.length === 1 ? 'domiciliario' : 'domiciliarios'}</span>
+        </div>
+        <div className="weekly-courier-names">
+          {couriers.map((courier) => <span className={courier.is_support ? 'weekly-courier-name support' : 'weekly-courier-name'} key={`${date}-${courier.courier_id}-${courier.starts_at}`}>
+            {courier.full_name || 'Domiciliario'}{courier.is_support ? ' · apoyo' : ''} · {formatTime(courier.starts_at)}–{formatTime(courier.ends_at)}
+          </span>)}
+        </div>
+      </div>)}
+    </div>}
+  </section>;
+}
+
+function PharmacyScheduleView({ pharmacy, rows, breakdown, breakdownError }) {
+  return <div className="pharmacy-page-grid">
+    <section className="form-card schedule-page-card">
+      <div className="card-heading">
+        <div>
+          <span className="section-kicker">Cobertura publicada</span>
+          <h2>{formatPharmacyDisplay(pharmacy)} · turnos</h2>
+        </div>
+        <div className="zone-chip"><span /> {pharmacy.zone_name || 'Zona pendiente'}</div>
+      </div>
+      <p className="page-intro">Consulta quién estará disponible de lunes a domingo. Los apoyos generales aparecen aquí porque pueden atender cualquier farmacia.</p>
+      <WeeklyCourierSchedule rows={rows} />
+    </section>
+    <aside className="side-column">
+      <CourierBreakdownCard breakdown={breakdown} error={breakdownError} />
+      <div className="info-card accent-card">
+        <span className="card-icon">⌁</span>
+        <div><span className="section-kicker">Regla operativa</span><h3>Apoyo general</h3><p>Si la farmacia necesita mover un domicilio, puede asignarlo a un apoyo elegible de la zona.</p></div>
+      </div>
+    </aside>
+  </div>;
+}
+
+function PharmacySettingsView({ pharmacy, profile, profiles, webPushState, onEnableWebPush, onDisableWebPush, onSignOut }) {
+  const pushStatus = webPushState.enabled
+    ? 'Activo'
+    : webPushState.permission === 'denied'
+      ? 'Bloqueado'
+      : webPushState.supported
+        ? 'Sin activar'
+        : 'Pendiente';
+  const pushDescription = webPushState.enabled
+    ? 'Recibirás avisos aunque cierres esta pestaña o dejes la web en segundo plano.'
+    : webPushState.error || webPushState.message || (!webPushState.configured
+      ? 'El administrador debe configurar la clave Web Push antes de activar esta función.'
+      : 'Activa las alertas en este dispositivo para recibir domicilios y mensajes nuevos.');
+  return <div className="pharmacy-page-grid settings-page-grid">
+    <section className="form-card settings-page-card">
+      <div className="card-heading">
+        <div><span className="section-kicker">Cuenta operativa</span><h2>Ajustes de farmacia</h2></div>
+        <span className="live-pill">Supabase conectado</span>
+      </div>
+      <div className="settings-summary-grid">
+        <div className="settings-summary-item"><span>Farmacia</span><strong>{formatPharmacyDisplay(pharmacy)}</strong><small>{pharmacy.zone_name || 'Zona pendiente'}</small></div>
+        <div className="settings-summary-item"><span>Perfil activo</span><strong>{profile?.full_name || 'Vendedor'}</strong><small>{profiles.length} perfil{profiles.length === 1 ? '' : 'es'} disponibles</small></div>
+      </div>
+      <div className="settings-info-list">
+        <div><span>Datos</span><p>Los domicilios, clientes, chats y equivalentes se guardan en la base compartida de farmanorte.</p></div>
+        <div><span>Equivalentes</span><p>La farmacia puede ver el soporte cuando el domiciliario lo firma manualmente.</p></div>
+        <div className="push-settings-card">
+          <div className="push-settings-heading">
+            <div><span>Alertas en segundo plano</span><h3>Notificaciones web</h3><p>{pushDescription}</p></div>
+            <strong className={webPushState.enabled ? 'push-status active' : webPushState.permission === 'denied' ? 'push-status blocked' : 'push-status'}>{pushStatus}</strong>
+          </div>
+          {webPushState.supported && <button type="button" className="secondary-button push-settings-action" onClick={webPushState.enabled ? onDisableWebPush : onEnableWebPush} disabled={webPushState.loading}>{webPushState.loading ? 'Guardando…' : webPushState.enabled ? 'Desactivar en este dispositivo' : 'Activar alertas en segundo plano'}</button>}
+          <small className="push-settings-help">En iPhone, añade la página a la pantalla de inicio y permite las notificaciones. En escritorio, acepta el permiso del sitio.</small>
+        </div>
+      </div>
+      <button type="button" className="secondary-button settings-signout" onClick={onSignOut}>Cerrar sesión <span>↗</span></button>
+    </section>
+  </div>;
+}
+
+function CourierBreakdownCard({ breakdown, error, compact = false }) {
+  return <section className={compact ? 'courier-breakdown-card compact' : 'courier-breakdown-card'}>
+    <div className="courier-breakdown-heading">
+      <div><span className="section-kicker">Rendimiento real</span><h3>Domicilios por domiciliario</h3><p>Solo cuenta servicios entregados y firmados.</p></div>
+      <span className="courier-breakdown-icon">↗</span>
+    </div>
+    {error ? <p className="courier-breakdown-empty">El desglose todavía no está disponible. Ejecuta la actualización de Supabase para activarlo.</p> : breakdown.length === 0 ? <p className="courier-breakdown-empty">Aún no hay domicilios firmados para mostrar.</p> : <div className="courier-breakdown-list">{breakdown.map((item) => <div className="courier-breakdown-row" key={item.courier_id}><div className="courier-breakdown-avatar">{(item.courier_name || 'D').slice(0, 1).toUpperCase()}</div><div className="courier-breakdown-main"><strong>{item.courier_name || 'Domiciliario'}</strong><span>{item.service_count} domicilio{item.service_count === 1 ? '' : 's'} · {item.base_count} base · {item.support_count} apoyo</span></div><strong className="courier-breakdown-amount">{formatMoney(item.total_earnings)}</strong></div>)}</div>}
+  </section>;
+}
+
+function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliveryId, onOpenChat, selectedEquivalentDeliveryId, onOpenEquivalent, couriers, onAssign, onApproveDelivery, onRejectDelivery, courierBreakdown, courierBreakdownError }) {
   const [filter, setFilter] = useState('all');
   const filtered = useMemo(() => filter === 'all' ? deliveries : deliveries.filter((delivery) => delivery.status === filter), [deliveries, filter]);
   const selectedDelivery = deliveries.find((delivery) => delivery.id === selectedChatDeliveryId) ?? null;
   const selectedEquivalentDelivery = deliveries.find((delivery) => delivery.id === selectedEquivalentDeliveryId) ?? null;
   const hasTools = Boolean(selectedDelivery || selectedEquivalentDelivery);
-  return <section className="history-page"><div className="history-toolbar"><div><span className="section-kicker">Pedidos de {formatPharmacyDisplay(pharmacy)}</span><h2>Todos los pedidos</h2><p>Pedidos recibidos directamente desde Supabase. No hay registros locales.</p></div><div className="filter-row">{[['all', 'Todos'], ['offered', 'Publicados'], ['accepted', 'Aceptados'], ['delivered', 'Entregados']].map(([value, label]) => <button key={value} className={filter === value ? 'filter-button active' : 'filter-button'} onClick={() => setFilter(value)}>{label}</button>)}</div></div><div className={hasTools ? 'history-workspace has-tools' : 'history-workspace'}><div className="history-list">{filtered.map((delivery) => <DeliveryRow key={delivery.id} delivery={delivery} couriers={couriers} onAssign={onAssign} onOpenChat={onOpenChat} onOpenEquivalent={onOpenEquivalent} />)}{filtered.length === 0 && <div className="empty-history"><span>○</span><h3>No hay pedidos para mostrar</h3><p>Cuando publiques un domicilio aparecerá aquí.</p></div>}</div>{hasTools && <div className="history-tool-stack">{selectedDelivery && <DeliveryChatPanel delivery={selectedDelivery} session={session} profile={profile} onClose={() => onOpenChat(null)} />}{selectedEquivalentDelivery && <DeliveryEquivalentPanel delivery={selectedEquivalentDelivery} session={session} profile={profile} onClose={() => onOpenEquivalent(null)} />}</div>}</div></section>;
+  return (
+    <section className="history-page">
+      <div className="history-toolbar">
+        <div>
+          <span className="section-kicker">Pedidos de {formatPharmacyDisplay(pharmacy)}</span>
+          <h2>Todos los pedidos</h2>
+          <p>Pedidos recibidos directamente desde Supabase. No hay registros locales.</p>
+        </div>
+        <div className="filter-row">
+          {[
+            ['all', 'Todos'],
+            ['offered', 'Publicados'],
+            ['accepted', 'Aceptados'],
+            ['delivered', 'Entregados'],
+          ].map(([value, label]) => (
+            <button
+              key={value}
+              className={filter === value ? 'filter-button active' : 'filter-button'}
+              type="button"
+              onClick={() => setFilter(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <CourierBreakdownCard
+        breakdown={courierBreakdown}
+        error={courierBreakdownError}
+      />
+      <div className={hasTools ? 'history-workspace has-tools' : 'history-workspace'}>
+        <div className="history-list">
+          {filtered.map((delivery) => (
+            <DeliveryRow
+              key={delivery.id}
+              delivery={delivery}
+              couriers={couriers}
+              onAssign={onAssign}
+              onApproveDelivery={onApproveDelivery}
+              onRejectDelivery={onRejectDelivery}
+              onOpenChat={onOpenChat}
+              onOpenEquivalent={onOpenEquivalent}
+            />
+          ))}
+          {filtered.length === 0 && (
+            <div className="empty-history">
+              <span>○</span>
+              <h3>No hay pedidos para mostrar</h3>
+              <p>Cuando publiques un domicilio aparecerá aquí.</p>
+            </div>
+          )}
+        </div>
+        {hasTools && (
+          <div className="history-tool-stack">
+            {selectedDelivery && (
+              <DeliveryChatPanel
+                delivery={selectedDelivery}
+                session={session}
+                profile={profile}
+                onClose={() => onOpenChat(null)}
+              />
+            )}
+            {selectedEquivalentDelivery && (
+              <DeliveryEquivalentPanel
+                delivery={selectedEquivalentDelivery}
+                session={session}
+                profile={profile}
+                onClose={() => onOpenEquivalent(null)}
+              />
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  );
 }
 
 function equivalentInvoiceNumber(equivalent, delivery) {
@@ -1673,6 +2411,7 @@ function DeliveryChatPanel({ delivery, session, profile, onClose }) {
     } else if (data) {
       setMessages((current) => current.some((message) => message.id === data.id) ? current : [...current, data]);
       setDraft('');
+      triggerPushNotification({ event: 'chat_message', delivery_id: delivery.id, message_id: data.id });
     }
     setSending(false);
   };
@@ -1698,7 +2437,7 @@ createRoot(document.getElementById('root')).render(<App />);
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => {
+    registerWebAppServiceWorker().catch(() => {
       // La página sigue funcionando aunque el navegador no permita PWA.
     });
   });
