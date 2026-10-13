@@ -957,6 +957,19 @@ function App() {
     let channel;
     let lastUserId = null;
     let loadRequest = 0;
+    let courierRefreshInterval = null;
+    let courierRefreshTimeout = null;
+
+    const clearCourierRefresh = () => {
+      if (courierRefreshInterval !== null) {
+        window.clearInterval(courierRefreshInterval);
+        courierRefreshInterval = null;
+      }
+      if (courierRefreshTimeout !== null) {
+        window.clearTimeout(courierRefreshTimeout);
+        courierRefreshTimeout = null;
+      }
+    };
 
     const clearWorkspace = () => {
       setProfile(null);
@@ -1150,6 +1163,17 @@ function App() {
       await loadZoneCouriers();
       if (!isCurrent()) return;
 
+      const scheduleZoneCourierRefresh = () => {
+        if (!isCurrent() || courierRefreshTimeout !== null) return;
+        courierRefreshTimeout = window.setTimeout(() => {
+          courierRefreshTimeout = null;
+          void loadZoneCouriers();
+        }, 250);
+      };
+
+      clearCourierRefresh();
+      courierRefreshInterval = window.setInterval(scheduleZoneCourierRefresh, 10000);
+
       const { data: deliveryData, error: deliveriesError } = await supabase
         .from('deliveries')
         .select('*')
@@ -1237,12 +1261,12 @@ function App() {
         .on(
           'postgres_changes',
           { event: '*', schema: 'public', table: 'shifts' },
-          () => void loadZoneCouriers(),
+          scheduleZoneCourierRefresh,
         )
         .on(
           'postgres_changes',
           { event: '*', schema: 'public', table: 'courier_presence' },
-          () => void loadZoneCouriers(),
+          scheduleZoneCourierRefresh,
         )
         .subscribe();
     };
@@ -1253,6 +1277,7 @@ function App() {
       if (!nextSession) {
         lastUserId = null;
         loadRequest += 1;
+        clearCourierRefresh();
         clearWorkspace();
         setLoading(false);
         return;
@@ -1290,6 +1315,7 @@ function App() {
     return () => {
       mounted = false;
       loadRequest += 1;
+      clearCourierRefresh();
       authListener.subscription.unsubscribe();
       if (channel) supabase.removeChannel(channel);
     };
