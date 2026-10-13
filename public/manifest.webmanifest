@@ -1,7 +1,7 @@
 {
-  "name": "FarmaNorte · Operación",
-  "short_name": "FarmaNorte",
-  "description": "Panel operativo de domicilios FarmaNorte",
+  "name": "farmanorte · operación",
+  "short_name": "farmanorte",
+  "description": "Panel operativo de domicilios farmanorte",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
@@ -9,8 +9,8 @@
   "theme_color": "#2151aa",
   "icons": [
     {
-      "src": "farmanorte-logo.png",
-      "sizes": "any",
+      "src": "farmanorte-icon.png",
+      "sizes": "204x204",
       "type": "image/png",
       "purpose": "any"
     }
