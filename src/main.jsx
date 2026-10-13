@@ -437,26 +437,12 @@ function normalizeAuthIdentifier(value) {
   return normalized.includes('@') ? normalized : `${normalized}@farmanorte.local`;
 }
 
-function BrandLogo({ inverse = false }) {
-  if (inverse) {
-    return (
-      <div className="brand-logo-inverse" role="img" aria-label="farmanorte">
-        <svg viewBox="0 0 44 44" aria-hidden="true">
-          <circle cx="22" cy="22" r="18.5" fill="none" stroke="currentColor" strokeWidth="2.8" />
-          <path d="M15 30V14.5h15M15 21.5h11" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-        <span>farmanorte</span>
-      </div>
-    );
-  }
+const BRAND_LOGO_SRC = `${import.meta.env.BASE_URL}farmanorte-brand.png`;
 
+function BrandLogo({ inverse = false }) {
   return (
-    <div className="brand-logo brand-logo-wordmark" role="img" aria-label="farmanorte">
-      <svg viewBox="0 0 44 44" aria-hidden="true">
-        <circle cx="22" cy="22" r="18.5" fill="none" stroke="currentColor" strokeWidth="2.8" />
-        <path d="M15 30V14.5h15M15 21.5h11" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-      <span>farmanorte</span>
+    <div className={inverse ? 'brand-logo-inverse brand-logo-image' : 'brand-logo brand-logo-image'} role="img" aria-label="farmanorte">
+      <img src={BRAND_LOGO_SRC} alt="" width="255" height="73" loading="eager" />
     </div>
   );
 }
@@ -690,6 +676,17 @@ function ArrowIcon() {
 
 function ShieldIcon() {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 19 6v5.3c0 4.2-2.5 7.4-7 9.2-4.5-1.8-7-5-7-9.2V6l7-2.5Z" /><path d="m9 12 2 2 4-4" /></svg>;
+}
+
+function NavIcon({ name }) {
+  const paths = {
+    publish: <><path d="M12 5v14M5 12h14" /><path d="M5.5 19.5h13" /></>,
+    orders: <><path d="M6.5 4.5h11v15h-11z" /><path d="M9 8h6M9 12h6M9 16h3" /></>,
+    schedule: <><rect x="4.5" y="5.5" width="15" height="14" rx="2" /><path d="M8 3.5v4M16 3.5v4M4.5 9.5h15" /><path d="M8 13h.01M12 13h.01M16 13h.01M8 16h.01M12 16h.01" /></>,
+    settings: <><path d="M12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6Z" /><path d="m19.4 13.6 1.1.9-1.7 3-1.4-.5a7.9 7.9 0 0 1-1.8 1l-.2 1.5h-3.4l-.2-1.5a7.9 7.9 0 0 1-1.8-1l-1.4.5-1.7-3 1.1-.9a7.5 7.5 0 0 1 0-2.1l-1.1-.9 1.7-3 1.4.5a7.9 7.9 0 0 1 1.8-1l.2-1.5h3.4l.2 1.5a7.9 7.9 0 0 1 1.8 1l1.4-.5 1.7 3-1.1.9a7.5 7.5 0 0 1 0 2.1Z" /></>,
+    reception: <><path d="M5 9.5h14v9H5zM7.5 9.5V6.8h9v2.7M8 13h8M8 16h5" /><path d="M3.5 18.5h17" /></>,
+  };
+  return <svg className="nav-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.publish}</svg>;
 }
 
 function PasswordRecoveryScreen({ onComplete }) {
@@ -1800,21 +1797,25 @@ function App() {
 
         <div className="sidebar-section-label">Módulo farmacia</div>
         <nav className="main-nav" aria-label="Navegación principal">
-          <button type="button" className={activeView === 'publish' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('publish')}>
-            <span className="nav-icon">＋</span>
+          <button type="button" className={activeView === 'publish' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('publish')} aria-current={activeView === 'publish' ? 'page' : undefined}>
+            <span className="nav-icon"><NavIcon name="publish" /></span>
             <span>Publicar domicilio</span>
           </button>
-          <button type="button" className={activeView === 'history' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('history')}>
-            <span className="nav-icon">◷</span>
+          <button type="button" className={activeView === 'history' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('history')} aria-current={activeView === 'history' ? 'page' : undefined}>
+            <span className="nav-icon"><NavIcon name="orders" /></span>
             <span>Pedidos</span>
             <span className="nav-count">{deliveries.length}</span>
           </button>
-          <button type="button" className={activeView === 'schedule' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('schedule')}>
-            <span className="nav-icon">▦</span>
+          <button type="button" className={activeView === 'reception' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('reception')} aria-current={activeView === 'reception' ? 'page' : undefined}>
+            <span className="nav-icon"><NavIcon name="reception" /></span>
+            <span>Recepción</span>
+          </button>
+          <button type="button" className={activeView === 'schedule' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('schedule')} aria-current={activeView === 'schedule' ? 'page' : undefined}>
+            <span className="nav-icon"><NavIcon name="schedule" /></span>
             <span>Turnos</span>
           </button>
-          <button type="button" className={activeView === 'settings' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('settings')}>
-            <span className="nav-icon">⚙</span>
+          <button type="button" className={activeView === 'settings' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveView('settings')} aria-current={activeView === 'settings' ? 'page' : undefined}>
+            <span className="nav-icon"><NavIcon name="settings" /></span>
             <span>Ajustes</span>
           </button>
         </nav>
@@ -1836,7 +1837,7 @@ function App() {
           <div>
             <p className="welcome-line">Bienvenido, {firstName}</p>
             <p className="eyebrow">Panel de farmacia <span className="live-pill">EN VIVO</span></p>
-            <h1>{activeView === 'publish' ? 'Nuevo domicilio' : activeView === 'history' ? 'Pedidos' : activeView === 'schedule' ? 'Turnos de la semana' : 'Ajustes'}</h1>
+            <h1>{activeView === 'publish' ? 'Nuevo domicilio' : activeView === 'history' ? 'Pedidos' : activeView === 'reception' ? 'Recepción' : activeView === 'schedule' ? 'Turnos de la semana' : 'Ajustes'}</h1>
           </div>
           <div className="operator-info">
             <div className="operator-avatar">{(operatorName || 'F').slice(0, 1).toUpperCase()}</div>
@@ -1999,6 +2000,7 @@ function App() {
             onRejectDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, false)}
             courierBreakdown={courierBreakdown}
             courierBreakdownError={courierBreakdownError}
+            viewMode={activeView}
           />
         )}
       </main>
@@ -2177,9 +2179,13 @@ function CourierBreakdownCard({ breakdown, error, compact = false }) {
   </section>;
 }
 
-function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliveryId, onOpenChat, selectedEquivalentDeliveryId, onOpenEquivalent, couriers, onAssign, onApproveDelivery, onRejectDelivery, courierBreakdown, courierBreakdownError }) {
-  const [filter, setFilter] = useState('all');
-  const filtered = useMemo(() => filter === 'all' ? deliveries : deliveries.filter((delivery) => delivery.status === filter), [deliveries, filter]);
+function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliveryId, onOpenChat, selectedEquivalentDeliveryId, onOpenEquivalent, couriers, onAssign, onApproveDelivery, onRejectDelivery, courierBreakdown, courierBreakdownError, viewMode = 'history' }) {
+  const isReception = viewMode === 'reception';
+  const [filter, setFilter] = useState(isReception ? 'delivered' : 'all');
+  const filtered = useMemo(() => {
+    if (isReception) return deliveries.filter((delivery) => ['delivered', 'notDelivered'].includes(delivery.status));
+    return filter === 'all' ? deliveries : deliveries.filter((delivery) => delivery.status === filter);
+  }, [deliveries, filter, isReception]);
   const selectedDelivery = deliveries.find((delivery) => delivery.id === selectedChatDeliveryId) ?? null;
   const selectedEquivalentDelivery = deliveries.find((delivery) => delivery.id === selectedEquivalentDeliveryId) ?? null;
   const hasTools = Boolean(selectedDelivery || selectedEquivalentDelivery);
@@ -2187,11 +2193,11 @@ function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliv
     <section className="history-page">
       <div className="history-toolbar">
         <div>
-          <span className="section-kicker">Pedidos de {formatPharmacyDisplay(pharmacy)}</span>
-          <h2>Todos los pedidos</h2>
-          <p>Pedidos recibidos directamente desde Supabase. No hay registros locales.</p>
+          <span className="section-kicker">{isReception ? 'Soportes de' : 'Pedidos de'} {formatPharmacyDisplay(pharmacy)}</span>
+          <h2>{isReception ? 'Recepción de equivalentes' : 'Todos los pedidos'}</h2>
+          <p>{isReception ? 'Revisa los servicios finalizados y abre el equivalente firmado para confirmar su recepción.' : 'Pedidos recibidos directamente desde Supabase. No hay registros locales.'}</p>
         </div>
-        <div className="filter-row">
+        {!isReception && <div className="filter-row">
           {[
             ['all', 'Todos'],
             ['offered', 'Publicados'],
@@ -2207,7 +2213,7 @@ function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliv
               {label}
             </button>
           ))}
-        </div>
+        </div>}
       </div>
       <CourierBreakdownCard
         breakdown={courierBreakdown}
