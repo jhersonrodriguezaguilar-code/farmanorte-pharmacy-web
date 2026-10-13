@@ -833,8 +833,6 @@ function LoginScreen() {
         <div className="brand-lockup"><BrandLogo inverse /></div>
         <div className="auth-quote">
           <LoginHeroCopy />
-          <LoginDeliveryScene />
-          <LoginRouteMotion />
         </div>
         <div className="auth-aside-footer">Panel privado para personal autorizado</div>
       </div>
