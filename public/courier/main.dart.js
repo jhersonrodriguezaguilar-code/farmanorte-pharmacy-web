@@ -59899,7 +59899,7 @@ p=r?"Turnos, farmacias y domicilios en un solo lugar.":"Ingresa para recibir tur
 if(o)k=148
 else k=k<720?158:174
 return A.BR(B.xM,A.iy(!0,A.ay(A.b([n.apl(r,!0,p,q,k,j.ax,o),A.bf(A.iB(n.a_d(a,!0,o),B.a08,B.aM),1)],t.p),B.O,B.A,B.D),B.aD,!0))}return A.BR(B.xM,A.iy(!0,A.m4(new A.aSC(n,i,s,r,j.ax,q,p)),B.aD,!0))},
-apl(a,b,c,a0,a1,a2,a3){var s,r,q,p=null,o=a3?184:194,n=A.px(p,A.b6(p,p,B.N,p,p,new A.aU(B.aA.cC(0.2),p,p,p,p,p,B.db),p,300,p,p,p,p,300),p,p,p,-132,24,p),m=A.px(p,A.b6(p,p,B.N,p,p,new A.aU(B.F.cC(0.06),p,p,p,p,p,B.db),p,176,p,p,p,p,176),p,p,p,-30,84,p),l=A.b33(0,A.hC(p,p,p,B.Tm,B.aq)),k=a3?16:20,j=a3?10:16,i=a3?16:20,h=a3?8:14,g=a3?42:50,f=A.bd(10),e=A.b([new A.bX(0,B.aE,B.S.cC(0.12),B.uo,12)],t.F),d=t.p
+apl(a,b,c,a0,a1,a2,a3){var s,r,q,p=null,o=a3?184:194,n=A.px(p,A.b6(p,p,B.N,p,p,new A.aU(B.aA.cC(0.2),p,p,p,p,p,B.db),p,300,p,p,p,p,300),p,p,p,-132,24,p),m=A.px(p,A.b6(p,p,B.N,p,p,new A.aU(B.F.cC(0.06),p,p,p,p,p,B.db),p,176,p,p,p,p,176),p,p,p,-30,84,p),l=A.b33(0,A.hC(p,p,p,B.Tm,B.aq)),k=a3?16:20,j=a3?10:16,i=a3?16:20,h=a3?6:12,g=a3?42:50,f=A.bd(10),e=A.b([new A.bX(0,B.aE,B.S.cC(0.12),B.uo,12)],t.F),d=t.p
 g=A.aR(A.b([new A.h1(1,B.cS,A.b6(p,A.aoc("assets/farmanorte-brand.png",B.c6,B.j2,p,"farmanorte",p),B.N,p,p,new A.aU(B.F,p,p,f,e,p,B.a5),p,g,p,new A.ab(8,5,8,5),p,p,o+16),p)],d),B.O,B.A,B.D,0)
 e=this.r
 e===$&&A.a()
