@@ -543,6 +543,118 @@ function LoginHeroCopy({ headingId }) {
   );
 }
 
+function LoginRouteMotion() {
+  const routeRef = useRef(null);
+
+  useEffect(() => {
+    const route = routeRef.current;
+    if (!route) return undefined;
+
+    const measureRoute = () => {
+      const distance = Math.max(0, route.clientWidth - 18);
+      route.style.setProperty('--route-distance', `${distance}px`);
+      route.style.setProperty('--route-half-distance', `${distance / 2}px`);
+    };
+
+    measureRoute();
+    const observer = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(measureRoute);
+    observer?.observe(route);
+    return () => observer?.disconnect();
+  }, []);
+
+  return (
+    <div className="hero-route" aria-hidden="true">
+      <div className="hero-route-track">
+        <span className="hero-route-node route-node-one" />
+        <span className="hero-route-node route-node-two" />
+        <span className="hero-route-node route-node-three" />
+        <span className="hero-route-runner" ref={routeRef} />
+      </div>
+      <span className="hero-route-label">RUTA ACTIVA · EN VIVO</span>
+    </div>
+  );
+}
+
+function LoginDeliveryScene() {
+  return (
+    <div className="login-delivery-scene" aria-hidden="true">
+      <svg className="delivery-scene-art" viewBox="0 0 520 260" focusable="false">
+        <path className="scene-route-shadow" d="M82 211 C155 184 188 230 257 202 S355 176 438 209" />
+        <path className="scene-route" d="M82 211 C155 184 188 230 257 202 S355 176 438 209" />
+        <circle className="scene-route-node scene-node-one" cx="82" cy="211" r="5" />
+        <circle className="scene-route-node scene-node-two" cx="257" cy="202" r="5" />
+        <circle className="scene-route-node scene-node-three" cx="438" cy="209" r="5" />
+
+        <g className="scene-phone">
+          <rect x="72" y="51" width="84" height="144" rx="14" fill="#f8fcff" stroke="#a8cdef" strokeWidth="3" />
+          <rect x="81" y="64" width="66" height="112" rx="7" fill="#e5f2ff" />
+          <rect x="96" y="57" width="36" height="5" rx="2.5" fill="#a8cdef" />
+          <circle cx="114" cy="184" r="4" fill="#a8cdef" />
+          <path className="scene-phone-route" d="M94 133 C105 121 111 151 123 137 S136 128 141 114" fill="none" stroke="#2151aa" strokeWidth="3" strokeLinecap="round" strokeDasharray="5 6" />
+          <circle cx="95" cy="133" r="5" fill="#2151aa" />
+          <circle cx="141" cy="114" r="5" fill="#6eb2f0" />
+          <path d="M112 101h9M105 109h23" stroke="#7cadd7" strokeWidth="3" strokeLinecap="round" />
+          <path d="M101 152h25M101 159h18" stroke="#9bc4e8" strokeWidth="3" strokeLinecap="round" />
+        </g>
+
+        <g className="scene-pharmacy">
+          <path d="M225 123 285 91l61 32v78h-121z" fill="#c7e1f8" stroke="#86b8e8" strokeWidth="3" strokeLinejoin="round" />
+          <path d="m225 123 60-32 61 32" fill="none" stroke="#f8fcff" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
+          <rect x="240" y="138" width="32" height="63" rx="3" fill="#edf7ff" stroke="#86b8e8" strokeWidth="3" />
+          <rect x="286" y="139" width="43" height="29" rx="4" fill="#edf7ff" stroke="#86b8e8" strokeWidth="3" />
+          <path d="M307.5 145v17M299 153.5h17" stroke="#2151aa" strokeWidth="5" strokeLinecap="round" />
+          <path d="M234 121h102" stroke="#edf7ff" strokeWidth="6" strokeLinecap="round" />
+          <circle cx="248" cy="128" r="3" fill="#2151aa" />
+          <circle cx="319" cy="128" r="3" fill="#2151aa" />
+        </g>
+
+        <g className="scene-package">
+          <path d="m354 160 30-15 29 15-30 17z" fill="#f8fcff" stroke="#a8cdef" strokeWidth="3" strokeLinejoin="round" />
+          <path d="m354 160 1 30 28 17 1-30zM413 160l-1 30-29 17 1-30z" fill="#b8d9f6" stroke="#86b8e8" strokeWidth="3" strokeLinejoin="round" />
+          <path d="m383 145 1 32M369 153l29 16" stroke="#2151aa" strokeWidth="3" strokeLinecap="round" />
+        </g>
+
+        <g className="scene-courier">
+          <circle cx="433" cy="137" r="13" fill="#f8fcff" stroke="#a8cdef" strokeWidth="3" />
+          <path d="M421 135c2-13 20-18 27-4-8-3-17-2-27 4z" fill="#d6ebfc" />
+          <path d="M416 158c5-12 26-13 34 0l11 24h-57z" fill="#eaf6ff" stroke="#a8cdef" strokeWidth="3" strokeLinejoin="round" />
+          <path d="M448 164h17l11 16-15 7-17-15z" fill="#2151aa" opacity=".88" />
+          <path d="M429 183h42" stroke="#86b8e8" strokeWidth="3" strokeLinecap="round" />
+          <path d="M420 185 400 211h71l-17-26M410 211l-9 11M460 211l9 11" fill="none" stroke="#f8fcff" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx="401" cy="225" r="13" fill="#d8ecfc" stroke="#86b8e8" strokeWidth="3" />
+          <circle cx="469" cy="225" r="13" fill="#d8ecfc" stroke="#86b8e8" strokeWidth="3" />
+          <circle cx="401" cy="225" r="4" fill="#2151aa" />
+          <circle cx="469" cy="225" r="4" fill="#2151aa" />
+        </g>
+
+        <path className="scene-spark spark-one" d="m199 112 5 10 10 5-10 5-5 10-5-10-10-5 10-5z" fill="#f8fcff" />
+        <path className="scene-spark spark-two" d="m370 92 3 7 7 3-7 3-3 7-3-7-7-3 7-3z" fill="#8fc4f4" />
+      </svg>
+      <span className="scene-caption"><span className="scene-caption-dot" /> Ruta conectada en tiempo real</span>
+    </div>
+  );
+}
+
+function LoginFormAtmosphere({ orbitRef, glowRef }) {
+  return (
+    <div className="login-atmosphere" aria-hidden="true">
+      <div className="login-atmosphere-glow" ref={glowRef} />
+      <div className="login-atmosphere-orbit" ref={orbitRef}>
+        <span className="atmosphere-ring ring-one" />
+        <span className="atmosphere-ring ring-two" />
+        <span className="atmosphere-ring ring-three" />
+        <span className="atmosphere-core" />
+      </div>
+      <span className="atmosphere-star star-one" />
+      <span className="atmosphere-star star-two" />
+      <span className="atmosphere-star star-three" />
+      <span className="atmosphere-star star-four" />
+    </div>
+  );
+}
+
 function LoginAmbient() {
   return (
     <div className="login-ambient" aria-hidden="true">
@@ -668,88 +780,83 @@ function MandatoryPasswordScreen({ profile }) {
 function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [resetting, setResetting] = useState(false);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const atmosphereOrbitRef = useRef(null);
+  const atmosphereGlowRef = useRef(null);
+  const atmosphereFrameRef = useRef(null);
+  const atmospherePointerRef = useRef({ x: 0, y: 0 });
 
-  const requestPasswordReset = async () => {
-    setError('');
-    setNotice('');
-    if (!email.trim()) {
-      setError('Escribe tu usuario o correo para solicitar la recuperación.');
-      document.getElementById('login-email')?.focus();
-      return;
-    }
-    setResetting(true);
-    const { error: resetError } = await supabase.auth.resetPasswordForEmail(normalizeAuthIdentifier(email), {
-      redirectTo: `${window.location.origin}/?mode=reset-password`,
+  const moveAtmosphere = (event) => {
+    const card = event.currentTarget;
+    const bounds = card.getBoundingClientRect();
+    atmospherePointerRef.current = {
+      x: ((event.clientX - bounds.left) / bounds.width - 0.5) * 2,
+      y: ((event.clientY - bounds.top) / bounds.height - 0.5) * 2,
+    };
+    if (atmosphereFrameRef.current !== null) return;
+    atmosphereFrameRef.current = window.requestAnimationFrame(() => {
+      atmosphereFrameRef.current = null;
+      const { x, y } = atmospherePointerRef.current;
+      if (atmosphereOrbitRef.current) {
+        atmosphereOrbitRef.current.style.transform = `translate3d(${x * 14}px, ${y * 10}px, 0)`;
+      }
+      if (atmosphereGlowRef.current) {
+        atmosphereGlowRef.current.style.transform = `translate3d(${x * -10}px, ${y * -8}px, 0)`;
+      }
     });
-    if (resetError) {
-      setError('No se pudo solicitar el restablecimiento. Verifica el usuario o correo e inténtalo nuevamente.');
-    } else {
-      setNotice('Si el usuario tiene un correo asociado, recibirás instrucciones para restablecer la contraseña.');
-    }
-    setResetting(false);
   };
+
+  const resetAtmosphere = () => {
+    if (atmosphereFrameRef.current !== null) {
+      window.cancelAnimationFrame(atmosphereFrameRef.current);
+      atmosphereFrameRef.current = null;
+    }
+    if (atmosphereOrbitRef.current) atmosphereOrbitRef.current.style.transform = 'translate3d(0, 0, 0)';
+    if (atmosphereGlowRef.current) atmosphereGlowRef.current.style.transform = 'translate3d(0, 0, 0)';
+  };
+
+  useEffect(() => () => resetAtmosphere(), []);
 
   const submit = async (event) => {
     event.preventDefault();
     setSubmitting(true);
     setError('');
-    setNotice('');
     const { error: signInError } = await supabase.auth.signInWithPassword({ email: normalizeAuthIdentifier(email), password });
-    if (signInError) setError('No se pudo iniciar sesión. Verifica tus credenciales e inténtalo nuevamente.');
+    if (signInError) setError(getErrorMessage(signInError));
     setSubmitting(false);
   };
 
   return (
-    <div className="pharmacy-login-page">
-      <div className="pharmacy-login-shell">
-        <section className="pharmacy-login-hero" aria-labelledby="pharmacy-login-hero-title">
-          <div className="pharmacy-login-hero-orbit pharmacy-login-hero-orbit-one" />
-          <div className="pharmacy-login-hero-orbit pharmacy-login-hero-orbit-two" />
-          <div className="pharmacy-login-hero-route" aria-hidden="true" />
-          <div className="pharmacy-login-brand">
-            <BrandLogo inverse />
-            <span className="pharmacy-login-brand-subtitle">RED DE DOMICILIOS</span>
-          </div>
-          <div className="pharmacy-login-hero-copy">
-            <LoginHeroCopy headingId="pharmacy-login-hero-title" />
-          </div>
-        </section>
-
-        <main className="pharmacy-login-main">
-          <LoginAmbient />
-          <div className="auth-form-wrap pharmacy-login-card">
-            <span className="section-kicker">ACCESO DE FARMACIA</span>
-            <h2>Inicia sesión</h2>
-            <p className="auth-copy">Ingresa con las credenciales que te asignó el administrador.</p>
-            {error && <div id="login-error" className="inline-alert error-alert" role="alert" aria-live="assertive">{error}</div>}
-            {notice && <div className="inline-alert success-alert" role="status" aria-live="polite">{notice}</div>}
-            <form onSubmit={submit} className="auth-form" aria-busy={submitting}>
-              <Field label="Usuario o correo" required id="login-email">
-                <div className="auth-input-shell">
-                  <span className="auth-input-icon"><UserIcon /></span>
-                  <input id="login-email" type="text" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Ingresa tu usuario o correo" autoComplete="username" required aria-describedby={error ? 'login-error' : undefined} />
-                </div>
-              </Field>
-              <Field label="Contraseña" required id="login-password">
-                <div className="auth-input-shell">
-                  <span className="auth-input-icon"><LockIcon /></span>
-                  <input id="login-password" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Ingresa tu contraseña" autoComplete="current-password" required aria-describedby={error ? 'login-error' : undefined} />
-                  <button type="button" className="password-toggle" aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} aria-pressed={showPassword} onMouseDown={(event) => event.preventDefault()} onClick={() => setShowPassword((visible) => !visible)}><EyeIcon hidden={showPassword} /></button>
-                </div>
-              </Field>
-              <div className="auth-recovery-row"><button type="button" className="forgot-link" onClick={requestPasswordReset} disabled={resetting}>{resetting ? 'Enviando instrucciones…' : '¿Olvidaste tu contraseña?'}</button></div>
-              <button className="primary-button full-width" disabled={submitting}>{submitting ? 'Verificando acceso…' : 'Entrar al panel'} <ArrowIcon /></button>
-            </form>
-            <div className="auth-note"><ShieldIcon /><span>Acceso seguro para personal autorizado</span></div>
-          </div>
-        </main>
-        <p className="pharmacy-login-footer">Panel privado para personal autorizado</p>
+    <div className="auth-page">
+      <div className="auth-aside">
+        <div className="brand-lockup"><BrandLogo inverse /></div>
+        <div className="auth-quote">
+          <LoginHeroCopy />
+          <LoginDeliveryScene />
+          <LoginRouteMotion />
+        </div>
+        <div className="auth-aside-footer">Panel privado para personal autorizado</div>
       </div>
+      <main className="auth-main">
+        <div className="auth-form-wrap" onPointerMove={moveAtmosphere} onPointerLeave={resetAtmosphere}>
+          <LoginFormAtmosphere orbitRef={atmosphereOrbitRef} glowRef={atmosphereGlowRef} />
+          <span className="section-kicker">Acceso de farmacia</span>
+          <h2>Inicia sesión</h2>
+          <p className="auth-copy">Usa el usuario que el administrador creó para tu farmacia.</p>
+          {error && <div className="inline-alert error-alert" role="alert">{error}</div>}
+          <form onSubmit={submit} className="auth-form" aria-busy={submitting}>
+            <Field label="Usuario o correo" required>
+              <input type="text" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="juan.perez" autoComplete="username" required />
+            </Field>
+            <Field label="Contraseña" required>
+              <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••" autoComplete="current-password" required />
+            </Field>
+            <button className="primary-button full-width" disabled={submitting}>{submitting ? 'Validando…' : 'Entrar al panel'} <span>→</span></button>
+          </form>
+          <div className="auth-note"><span>●</span> Autenticación protegida por Supabase Auth</div>
+        </div>
+      </main>
     </div>
   );
 }
