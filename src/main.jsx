@@ -1040,14 +1040,24 @@ function App() {
         return;
       }
 
-      const { data: pharmacyProfileData, error: pharmacyProfilesError } = await supabase
-        .from('pharmacy_profiles')
-        .select('id, pharmacy_code, display_name, username, profile_role, active')
-        .eq('pharmacy_code', profileData.pharmacy_code)
-        .eq('active', true)
-        .order('display_name');
+      // Estos datos son independientes. Hacer las dos lecturas en paralelo
+      // evita que el acceso espere dos viajes consecutivos a Supabase.
+      const [pharmacyProfilesResponse, pharmacyResponse] = await Promise.all([
+        supabase
+          .from('pharmacy_profiles')
+          .select('id, pharmacy_code, display_name, username, profile_role, active')
+          .eq('pharmacy_code', profileData.pharmacy_code)
+          .eq('active', true)
+          .order('display_name'),
+        supabase
+          .from('pharmacies')
+          .select('code, name, zone_name, address, active')
+          .eq('code', profileData.pharmacy_code)
+          .maybeSingle(),
+      ]);
 
       if (!isCurrent()) return;
+      const { data: pharmacyProfileData, error: pharmacyProfilesError } = pharmacyProfilesResponse;
       if (pharmacyProfilesError) {
         setError(getErrorMessage(pharmacyProfilesError));
         setLoading(false);
@@ -1065,13 +1075,7 @@ function App() {
         rememberedProfile ?? (activePharmacyProfiles.length === 1 ? activePharmacyProfiles[0] : null),
       );
 
-      const { data: pharmacyData, error: pharmacyError } = await supabase
-        .from('pharmacies')
-        .select('code, name, zone_name, address, active')
-        .eq('code', profileData.pharmacy_code)
-        .maybeSingle();
-
-      if (!isCurrent()) return;
+      const { data: pharmacyData, error: pharmacyError } = pharmacyResponse;
       if (pharmacyError) {
         setError(getErrorMessage(pharmacyError));
         setLoading(false);
@@ -1099,18 +1103,17 @@ function App() {
         setCourierBreakdownError('');
       };
 
-      const { data: pharmacyCatalog, error: pharmacyCatalogError } = await supabase
+      // El catálogo solo se usa al elegir un cruce/compra. No debe bloquear la
+      // apertura del panel principal.
+      void supabase
         .from('pharmacies')
         .select('code, name, zone_name, active')
         .eq('active', true)
-        .order('code');
-
-      if (!isCurrent()) return;
-      if (pharmacyCatalogError) {
-        setAvailablePharmacies([]);
-      } else {
-        setAvailablePharmacies(pharmacyCatalog ?? []);
-      }
+        .order('code')
+        .then(({ data: pharmacyCatalog, error: pharmacyCatalogError }) => {
+          if (!isCurrent()) return;
+          setAvailablePharmacies(pharmacyCatalogError ? [] : (pharmacyCatalog ?? []));
+        });
 
       const { data: directZone, error: directZoneError } = await supabase
         .from('zones')
@@ -1141,27 +1144,41 @@ function App() {
           date.setDate(monday.getDate() + index);
           return localDateIso(date);
         });
-        const weekResponses = await Promise.all(weekDates.map((date) => supabase.rpc(
-          'get_pharmacy_zone_couriers',
-          { requested_zone_id: directZone.id, requested_date: date },
-        )));
-        if (!isCurrent()) return;
         const currentDate = localDateIso();
-        const todayResponse = weekResponses[weekDates.indexOf(currentDate)] || {};
-        const firstError = weekResponses.find((response) => response.error)?.error;
-        if (firstError) {
+        const currentIndex = weekDates.indexOf(currentDate);
+        const todayResponse = await supabase.rpc(
+          'get_pharmacy_zone_couriers',
+          { requested_zone_id: directZone.id, requested_date: currentDate },
+        );
+        if (!isCurrent()) return;
+        if (todayResponse.error) {
           setZoneCouriers([]);
           setWeeklyZoneCouriers([]);
-          setError(getErrorMessage(firstError));
+          setError(getErrorMessage(todayResponse.error));
           return;
         }
-        const weeklyRows = weekResponses.flatMap((response) => response.data ?? []);
         setZoneCouriers(todayResponse.data ?? []);
-        setWeeklyZoneCouriers(weeklyRows);
+        // La pantalla ya puede dibujarse con la cobertura de hoy. La semana
+        // completa se consulta después para que turnos no vuelva lento el
+        // primer acceso al panel.
+        setWeeklyZoneCouriers(todayResponse.data ?? []);
+        const remainingDates = weekDates.filter((_, index) => index !== currentIndex);
+        void Promise.all(remainingDates.map((date) => supabase.rpc(
+          'get_pharmacy_zone_couriers',
+          { requested_zone_id: directZone.id, requested_date: date },
+        ))).then((remainingResponses) => {
+          if (!isCurrent()) return;
+          const firstError = remainingResponses.find((response) => response.error)?.error;
+          if (firstError) return;
+          const weeklyRows = [todayResponse, ...remainingResponses]
+            .flatMap((response) => response.data ?? []);
+          setWeeklyZoneCouriers(weeklyRows);
+        });
       };
 
       // Estas consultas no dependen entre sí. Ejecutarlas en paralelo evita que
-      // la pantalla espere primero la semana de turnos y luego los pedidos.
+      // la pantalla espere primero la semana de turnos, el desglose y luego los
+      // pedidos. El desglose continúa cargando en segundo plano.
       const zoneCouriersPromise = loadZoneCouriers();
       const deliveryPromise = supabase
         .from('deliveries')
@@ -1169,9 +1186,12 @@ function App() {
         .eq('pharmacy_code', pharmacyData.code)
         .order('created_at', { ascending: false })
         .limit(30);
-      const breakdownPromise = loadCourierBreakdown(pharmacyData.code);
+      void loadCourierBreakdown(pharmacyData.code);
 
-      await Promise.all([zoneCouriersPromise, breakdownPromise]);
+      const [, deliveryResponse] = await Promise.all([
+        zoneCouriersPromise,
+        deliveryPromise,
+      ]);
       if (!isCurrent()) return;
 
       const scheduleZoneCourierRefresh = () => {
@@ -1185,7 +1205,7 @@ function App() {
       clearCourierRefresh();
       courierRefreshInterval = window.setInterval(scheduleZoneCourierRefresh, 10000);
 
-      const { data: deliveryData, error: deliveriesError } = await deliveryPromise;
+      const { data: deliveryData, error: deliveriesError } = deliveryResponse;
 
       if (!isCurrent()) return;
       if (deliveriesError) {

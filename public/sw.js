@@ -1,4 +1,4 @@
-const CACHE_NAME = 'farmanorte-pharmacy-shell-v4';
+const CACHE_NAME = 'farmanorte-pharmacy-shell-v5';
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -75,15 +75,20 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
 
   if (request.mode === 'navigate') {
-    event.respondWith(
-      fetch(request)
+    // La navegación vuelve a abrirse desde caché de inmediato y se actualiza
+    // en segundo plano. Así no se queda esperando a GitHub Pages cada vez que
+    // el usuario sale y entra a la PWA.
+    event.respondWith((async () => {
+      const cached = await caches.match(request);
+      const network = fetch(request)
         .then((response) => {
           const copy = response.clone();
           void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
           return response;
         })
-        .catch(() => caches.match(request)),
-    );
+        .catch(() => cached);
+      return cached || network;
+    })());
     return;
   }
 
