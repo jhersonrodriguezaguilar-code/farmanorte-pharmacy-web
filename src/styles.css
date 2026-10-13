@@ -2458,3 +2458,282 @@ input:focus, textarea:focus, select:focus { border-color: var(--brand-blue); box
 @media (prefers-reduced-motion: reduce) {
   .nav-item:hover, .delivery-row:hover { transform: none; }
 }
+
+
+/*
+ * Turnos y ajustes · segunda pasada de composición
+ *
+ * Estas reglas corrigen la densidad visual de las dos vistas sin cambiar su
+ * lógica ni los datos que vienen de Supabase. La información queda agrupada
+ * en bloques cortos, con un estado vacío intencional y mejor lectura en
+ * escritorio y móvil.
+ */
+.pharmacy-page-grid {
+  align-items: start;
+  gap: 24px;
+}
+
+.schedule-page-card,
+.settings-page-card {
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 24px;
+  box-shadow: 0 20px 48px rgba(14, 54, 119, .08);
+}
+
+.schedule-page-card .card-heading,
+.settings-page-card .card-heading {
+  padding: 30px 32px 18px;
+  border-bottom: 0;
+  background: #ffffff;
+}
+
+.schedule-page-card .card-heading h2,
+.settings-page-card .card-heading h2 {
+  margin-top: 9px;
+  font-size: clamp(26px, 2.7vw, 36px);
+  letter-spacing: -.045em;
+}
+
+.schedule-page-card .page-intro {
+  max-width: none;
+  margin: 0 32px 20px;
+  padding: 14px 16px;
+  border: 1px solid #dbe7f2;
+  border-radius: 14px;
+  background: #f7faff;
+  color: #607993;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.schedule-page-card .weekly-couriers-card {
+  margin: 0 32px 32px;
+  padding: 22px;
+  border: 1px solid #dbe7f2;
+  border-radius: 18px;
+  background: #fbfdff;
+  box-shadow: none;
+}
+
+.weekly-couriers-card .info-card-header {
+  align-items: center;
+  padding-bottom: 13px;
+  border-bottom: 1px solid #e2ebf4;
+}
+
+.weekly-couriers-card .live-pill {
+  border-color: #c9dcf1;
+  background: #edf4ff;
+  color: #2459a9;
+}
+
+.weekly-couriers-card h3 {
+  margin: 17px 0 15px;
+  font-size: 18px;
+  letter-spacing: -.025em;
+}
+
+.weekly-couriers-card .empty-zone-couriers {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 76px;
+  padding: 16px;
+  border: 1px dashed #b9cfe6;
+  border-radius: 14px;
+  background: #ffffff;
+  color: #607993;
+}
+
+.weekly-couriers-card .empty-zone-couriers::before {
+  content: "✓";
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 10px;
+  background: #edf4ff;
+  color: #2459a9;
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.weekly-courier-groups {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.weekly-courier-day {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #dbe7f2;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.weekly-courier-day-heading {
+  min-height: 20px;
+}
+
+.weekly-courier-day-heading strong {
+  color: #173b5e;
+  font-size: 12px;
+}
+
+.weekly-courier-day-heading span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #f1f6fb;
+  color: #6f859b;
+  font-size: 9px;
+}
+
+.weekly-courier-names { margin-top: 11px; }
+.weekly-courier-name {
+  padding: 9px 10px;
+  border-color: #e0eaf3;
+  border-radius: 10px;
+  background: #f7faff;
+  color: #58738f;
+  font-size: 10px;
+}
+
+.weekly-courier-name.support {
+  border-color: #bfd2f4;
+  background: #edf4ff;
+  color: #2459a9;
+}
+
+.schedule-page-card + .side-column {
+  align-content: start;
+}
+
+.schedule-page-card + .side-column .courier-breakdown-card,
+.schedule-page-card + .side-column .accent-card {
+  border-radius: 20px;
+  box-shadow: 0 16px 34px rgba(14, 54, 119, .07);
+}
+
+.schedule-page-card + .side-column .courier-breakdown-card {
+  padding: 22px;
+}
+
+.schedule-page-card + .side-column .accent-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 14px;
+  padding: 21px;
+  background: #eaf3fd;
+}
+
+.schedule-page-card + .side-column .accent-card .card-icon { margin: 0; }
+
+/* Ajustes: una cabecera clara, un resumen corto y filas de información planas. */
+.settings-page-grid {
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: stretch;
+}
+
+.settings-page-card {
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.settings-page-card .live-pill {
+  border-color: #c9dcf1;
+  background: #edf4ff;
+  color: #2459a9;
+}
+
+.settings-summary-grid {
+  gap: 14px;
+  margin: 10px 32px 24px;
+}
+
+.settings-summary-item {
+  min-height: 94px;
+  padding: 17px 18px;
+  border-color: #dbe7f2;
+  border-radius: 16px;
+  background: #f7faff;
+}
+
+.settings-summary-item span,
+.settings-info-list span {
+  margin-bottom: 8px;
+  color: #5a7896;
+}
+
+.settings-summary-item strong {
+  font-size: 17px;
+  letter-spacing: -.015em;
+}
+
+.settings-info-list {
+  gap: 0;
+  margin: 0 32px;
+  overflow: hidden;
+  border: 1px solid #dbe7f2;
+  border-radius: 18px;
+  background: #ffffff;
+}
+
+.settings-info-list > div:not(.push-settings-card) {
+  display: grid;
+  grid-template-columns: minmax(135px, .32fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 22px;
+  padding: 18px 20px;
+  border: 0;
+  border-bottom: 1px solid #e2ebf4;
+  border-radius: 0;
+  background: #ffffff;
+}
+
+.settings-info-list > div:not(.push-settings-card) span { margin: 2px 0 0; }
+.settings-info-list > div:not(.push-settings-card) p { color: #294c6d; }
+
+.settings-info-list .push-settings-card {
+  margin: 14px;
+  padding: 18px 20px;
+  border-color: #b9d1ed !important;
+  border-radius: 16px !important;
+  background: #edf5ff !important;
+}
+
+.push-settings-heading { gap: 20px; }
+.push-settings-heading h3 { margin-bottom: 6px; font-size: 18px; }
+.push-settings-heading p { color: #456580; }
+.push-status { padding: 7px 10px; }
+.push-settings-action { min-height: 42px; }
+
+.settings-signout {
+  display: inline-flex;
+  margin: 24px 32px 30px;
+  border-color: #b9cfe6;
+}
+
+@media (max-width: 900px) {
+  .weekly-courier-groups { grid-template-columns: 1fr; }
+  .settings-page-card { max-width: none; }
+}
+
+@media (max-width: 760px) {
+  .schedule-page-card .card-heading,
+  .settings-page-card .card-heading { padding: 24px 18px 16px; }
+  .schedule-page-card .page-intro { margin: 0 18px 16px; }
+  .schedule-page-card .weekly-couriers-card { margin: 0 18px 18px; padding: 17px; }
+  .settings-summary-grid { margin: 8px 18px 18px; }
+  .settings-info-list { margin: 0 18px; }
+  .settings-info-list > div:not(.push-settings-card) {
+    grid-template-columns: 1fr;
+    gap: 7px;
+    padding: 15px 16px;
+  }
+  .settings-info-list .push-settings-card { margin: 10px; padding: 16px; }
+  .settings-signout { margin: 20px 18px 22px; }
+}
