@@ -1,4 +1,4 @@
-const CACHE_NAME = 'farmanorte-pharmacy-shell-v1';
+const CACHE_NAME = 'farmanorte-pharmacy-shell-v4';
 
 self.addEventListener('install', () => self.skipWaiting());
 
