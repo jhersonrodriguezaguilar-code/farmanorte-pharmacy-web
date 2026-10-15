@@ -2906,3 +2906,17 @@ body { background: var(--fn-canvas); color: var(--fn-ink); }
 @media (prefers-reduced-motion: reduce) {
   .delivery-row, .nav-item { transition: none; }
 }
+
+/* Destino fijo del cruce: se muestra como dato, no como selector. */
+.field-static {
+  display: flex;
+  align-items: center;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 1px dashed var(--fn-line);
+  border-radius: var(--fn-radius-field);
+  background: var(--fn-soft);
+  color: var(--fn-primary-dark);
+  font-weight: 800;
+  font-size: 13px;
+}

@@ -907,14 +907,17 @@ function PurchaseTaskRow({ item, index, canRemove, onChange, onRemove }) {
   );
 }
 
-function CrossTaskRow({ stop, index, canRemove, availablePharmacies, onChange, onRemove }) {
+function CrossTaskRow({ stop, index, canRemove, availablePharmacies, requestingPharmacy, onChange, onRemove }) {
+  // La farmacia que pide el cruce es siempre el destino: es la que necesita el
+  // producto. Solo se elige dónde se recoge.
+  const originOptions = availablePharmacies.filter((item) => item.code !== requestingPharmacy?.code);
   return (
     <fieldset className="task-row">
       <legend>Cruce {index + 1}</legend>
-      <p className="task-helper">Origen es donde se recoge el producto; destino es la farmacia a la que se lleva.</p>
+      <p className="task-helper">Elige la farmacia donde se recoge el producto. Se entrega aquí, en {formatPharmacyDisplay(requestingPharmacy)}.</p>
       <div className="task-row-grid cross-task-grid">
-        <label className="field"><span>Farmacia de origen <em>*</em></span><select value={stop.originPharmacyCode} onChange={(event) => onChange('originPharmacyCode', event.target.value)}><option value="">Selecciona origen</option>{availablePharmacies.map((item) => <option key={`origin-${item.code}`} value={item.code}>{formatPharmacyOption(item)}</option>)}</select></label>
-        <label className="field"><span>Farmacia destino <em>*</em></span><select value={stop.destinationPharmacyCode} onChange={(event) => onChange('destinationPharmacyCode', event.target.value)}><option value="">Selecciona destino</option>{availablePharmacies.map((item) => <option key={`destination-${item.code}`} value={item.code}>{formatPharmacyOption(item)}</option>)}</select></label>
+        <label className="field"><span>Recoger en (origen) <em>*</em></span><select value={stop.originPharmacyCode} onChange={(event) => onChange('originPharmacyCode', event.target.value)}><option value="">Selecciona la farmacia de origen</option>{originOptions.map((item) => <option key={`origin-${item.code}`} value={item.code}>{formatPharmacyOption(item)}</option>)}</select></label>
+        <div className="field"><span>Entregar en (destino)</span><div className="field-static">{formatPharmacyDisplay(requestingPharmacy)} · esta farmacia</div></div>
         <label className="field"><span>Producto <em>*</em></span><input value={stop.product} onChange={(event) => onChange('product', event.target.value)} placeholder="Producto del cruce" /></label>
         <label className="field quantity-field"><span>Cantidad <em>*</em></span><input type="number" min="1" step="1" value={stop.quantity} onChange={(event) => onChange('quantity', event.target.value)} inputMode="numeric" /></label>
         <div className="task-assignee-hint task-row-wide"><span>Quién recoge</span><strong>El domiciliario que acepte la operación</strong></div>
@@ -1370,6 +1373,21 @@ function App() {
     return () => navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
   }, [session?.user?.id]);
 
+  // Prioridad de zona (migración 039): cuando terminan los 3 minutos sin que
+  // nadie acepte, se pide el aviso push para los apoyos. El servidor lo envía
+  // una sola vez aunque haya varias pestañas abiertas.
+  useEffect(() => {
+    const timers = deliveries
+      .filter((item) => item.status === 'offered' && !item.accepted_courier_id && item.priority_until && !item.support_notified_at)
+      .map((item) => {
+        const wait = Math.max(0, new Date(item.priority_until).getTime() - Date.now()) + 1500;
+        return window.setTimeout(() => {
+          triggerPushNotification({ event: 'delivery_support_release', delivery_id: item.id });
+        }, wait);
+      });
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [deliveries]);
+
   const signOut = async () => {
     if (!supabase) return;
     setError('');
@@ -1516,8 +1534,8 @@ function App() {
     return catalogItem ? formatPharmacyOption(catalogItem) : `FN ${code}`;
   };
   const crossPreview = form.crossStops
-    .filter((stop) => stop.originPharmacyCode && stop.destinationPharmacyCode)
-    .map((stop) => `${pharmacyLabel(stop.originPharmacyCode)} → ${pharmacyLabel(stop.destinationPharmacyCode)}`)
+    .filter((stop) => stop.originPharmacyCode && pharmacy?.code)
+    .map((stop) => `Recoger en ${pharmacyLabel(stop.originPharmacyCode)} → entregar en ${pharmacyLabel(pharmacy.code)}`)
     .join(' · ');
 
   useEffect(() => {
@@ -1701,14 +1719,16 @@ function App() {
         return;
       }
     }
+    // El destino de todo cruce es la farmacia que lo solicita.
+    const crossStops = form.crossStops.map((stop) => ({ ...stop, destinationPharmacyCode: pharmacy.code }));
     if (selectedServiceType.requiresCross) {
-      if (form.crossStops.length === 0) {
+      if (crossStops.length === 0) {
         setError('Agrega al menos un cruce entre farmacias.');
         return;
       }
-      const invalidCross = form.crossStops.find((stop) => !stop.originPharmacyCode || !stop.destinationPharmacyCode || stop.originPharmacyCode === stop.destinationPharmacyCode || !stop.product.trim() || !Number(stop.quantity));
+      const invalidCross = crossStops.find((stop) => !stop.originPharmacyCode || stop.originPharmacyCode === stop.destinationPharmacyCode || !stop.product.trim() || !Number(stop.quantity));
       if (invalidCross) {
-        setError('Completa origen, destino, producto y cantidad en cada cruce.');
+        setError('Completa en cada cruce la farmacia de origen (distinta a esta), el producto y la cantidad.');
         return;
       }
     }
@@ -1716,7 +1736,7 @@ function App() {
     setPublishing(true);
     setError('');
     setNotice('');
-    const productSummary = buildProductSummary(form);
+    const productSummary = buildProductSummary({ ...form, crossStops });
     let customerId = null;
     let customerAddressId = null;
     if (requiresClient) {
@@ -1737,15 +1757,15 @@ function App() {
       customerId = customerRow?.customer_id || null;
       customerAddressId = customerRow?.customer_address_id || null;
     }
-    const deliveryTasks = buildDeliveryTasks(form);
-    const routeLabel = form.crossStops.length > 0
-      ? form.crossStops.map((stop) => `${pharmacyLabel(stop.originPharmacyCode)} → ${pharmacyLabel(stop.destinationPharmacyCode)}`).join(' · ')
+    const deliveryTasks = buildDeliveryTasks({ ...form, crossStops });
+    const routeLabel = crossStops.length > 0
+      ? crossStops.map((stop) => `${pharmacyLabel(stop.originPharmacyCode)} → ${pharmacyLabel(stop.destinationPharmacyCode)}`).join(' · ')
       : form.purchaseItems.map((item) => `${item.merchant} · ${item.branch}`).join(' · ');
     const pickupStops = [
       ...(!selectedServiceType.requiresCross || selectedServiceType.requiresPurchase || requiresClient
         ? [{ task_type: 'pharmacy', pharmacy_code: pharmacy.code, label: pharmacy.name }]
         : []),
-      ...form.crossStops.map((stop, index) => ({
+      ...crossStops.map((stop, index) => ({
         task_type: 'cross', sequence_no: index + 1, pharmacy_code: stop.originPharmacyCode,
         destination_pharmacy_code: stop.destinationPharmacyCode,
         label: `${stop.originPharmacyCode} → ${stop.destinationPharmacyCode}`,
@@ -1778,14 +1798,14 @@ function App() {
       cash_expected: requiresPayment && form.paymentMethod === 'cash' ? Number(form.cashExpected) : null,
       cash_change: requiresPayment && form.paymentMethod === 'cash' && cashChange >= 0 ? cashChange : null,
       total_to_collect: requiresPayment ? Number(form.paymentAmount) || 0 : 0,
-      cross_count: form.crossStops.length,
+      cross_count: crossStops.length,
       purchase_count: form.purchaseItems.length,
       change_of_money: false,
       has_dataphone: requiresPayment && ['card', 'qr'].includes(form.paymentMethod),
       pickup_stops: pickupStops,
       destination_options: requiresClient
         ? [{ type: 'client', label: form.address.trim() }]
-        : form.crossStops.map((stop) => ({ type: 'pharmacy', label: pharmacyLabel(stop.destinationPharmacyCode) })),
+        : crossStops.map((stop) => ({ type: 'pharmacy', label: pharmacyLabel(stop.destinationPharmacyCode) })),
       approval_pending: false,
       created_by: session.user.id,
       pharmacy_profile_id: selectedPharmacyProfile?.id ?? null,
@@ -1820,7 +1840,7 @@ function App() {
     setForm(createEmptyForm());
     setActiveView('history');
     setPublishing(false);
-    setNotice(`Domicilio ${formatDeliveryPublicCode(data.public_code)} publicado. La oferta vence en 5 minutos.`);
+    setNotice(`Domicilio ${formatDeliveryPublicCode(data.public_code)} publicado. Primero lo ve el domiciliario de la zona; si no lo acepta en 3 minutos, pasa al apoyo.`);
   };
 
   if (!supabase) return <ConfigScreen />;
@@ -1979,7 +1999,7 @@ function App() {
                     </div>}
                     {selectedServiceType.requiresCross && <div className="task-block">
                       <div className="task-block-header"><div><strong>Cruces entre farmacias</strong><small>Origen es donde se recoge; destino es donde se entrega el producto.</small></div><span className="task-count">{form.crossStops.length}/10</span></div>
-                      {form.crossStops.map((stop, index) => <CrossTaskRow key={stop.id} stop={stop} index={index} canRemove={form.crossStops.length > 1} availablePharmacies={availablePharmacies} onChange={(field, value) => updateCrossStop(stop.id, field, value)} onRemove={() => removeCrossStop(stop.id)} />)}
+                      {form.crossStops.map((stop, index) => <CrossTaskRow key={stop.id} stop={stop} index={index} canRemove={form.crossStops.length > 1} availablePharmacies={availablePharmacies} requestingPharmacy={pharmacy} onChange={(field, value) => updateCrossStop(stop.id, field, value)} onRemove={() => removeCrossStop(stop.id)} />)}
                       <button type="button" className="secondary-button task-add-button" onClick={addCrossStop}>＋ Agregar cruce</button>
                     </div>}
                   </div>}
@@ -2007,7 +2027,7 @@ function App() {
                   </div>
                 </div>
 
-                <div className="form-actions"><span>La oferta quedará disponible durante 5 minutos.</span><button className="primary-button" disabled={publishing || !zone}>{publishing ? 'Publicando…' : 'Publicar domicilio'} <span>→</span></button></div>
+                <div className="form-actions"><span>3 minutos para el domiciliario de la zona; luego 5 minutos para el apoyo.</span><button className="primary-button" disabled={publishing || !zone}>{publishing ? 'Publicando…' : 'Publicar domicilio'} <span>→</span></button></div>
               </form>
             </section>
 
@@ -2044,7 +2064,7 @@ function App() {
                 onViewDetails={openReportDetails}
               />
               <div className="info-card"><div className="info-card-header"><span className="section-kicker">Actividad reciente</span><button type="button" onClick={() => setActiveView('history')}>Ver todo →</button></div>{deliveries.slice(0, 3).map((delivery) => <DeliveryRow key={delivery.id} delivery={delivery} couriers={assignedCouriers} onLoadCouriers={loadDeliveryCouriers} onAssign={assignDelivery} onApproveDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, true)} onRejectDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, false)} onOpenChat={(deliveryId) => { selectChatDelivery(deliveryId); setActiveView('history'); }} onOpenEquivalent={(deliveryId) => { selectEquivalentDelivery(deliveryId); setActiveView('history'); }} />)}{deliveries.length === 0 && <EmptyActivity />}</div>
-              <div className="process-card"><span className="section-kicker">Flujo registrado</span><div className="process-step"><span>1</span><div><strong>Publicas</strong><small>Oferta abierta por 5 min</small></div></div><div className="process-line" /><div className="process-step"><span>2</span><div><strong>Se acepta</strong><small>El domiciliario recibe el aviso</small></div></div><div className="process-line" /><div className="process-step"><span>3</span><div><strong>Se entrega</strong><small>El pedido queda registrado</small></div></div></div>
+              <div className="process-card"><span className="section-kicker">Flujo registrado</span><div className="process-step"><span>1</span><div><strong>Publicas</strong><small>Primero la zona, luego el apoyo</small></div></div><div className="process-line" /><div className="process-step"><span>2</span><div><strong>Se acepta</strong><small>El domiciliario recibe el aviso</small></div></div><div className="process-line" /><div className="process-step"><span>3</span><div><strong>Se entrega</strong><small>El pedido queda registrado</small></div></div></div>
             </aside>
           </div>
         ) : activeView === 'schedule' ? (
