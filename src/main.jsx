@@ -1840,7 +1840,7 @@ function App() {
     setForm(createEmptyForm());
     setActiveView('history');
     setPublishing(false);
-    setNotice(`Domicilio ${formatDeliveryPublicCode(data.public_code)} publicado. Primero lo ve el domiciliario de la zona; si no lo acepta en 3 minutos, pasa al apoyo.`);
+    setNotice(`Domicilio ${formatDeliveryPublicCode(data.public_code)} publicado. Primero lo ve el domiciliario de tu zona; si no lo acepta en 3 minutos, se habilita para el resto del recorrido y el apoyo.`);
   };
 
   if (!supabase) return <ConfigScreen />;
@@ -1929,6 +1929,7 @@ function App() {
       </aside>
 
       <main className="main-content">
+        <LiveBackground />
         <header className="topbar">
           <div>
             <p className="welcome-line">Bienvenido, {firstName}</p>
@@ -1954,6 +1955,8 @@ function App() {
             </div>
           </div>
         </header>
+
+        <LiveStats deliveries={deliveries} couriersOnShift={zoneCouriers.length} />
 
         {error && <div className="inline-alert error-alert" role="alert">{error}<button type="button" aria-label="Cerrar error" onClick={() => setError('')}>×</button></div>}
         {notice && <div className="inline-alert success-alert" role="status">{notice}<button type="button" aria-label="Cerrar aviso" onClick={() => setNotice('')}>×</button></div>}
@@ -2027,7 +2030,7 @@ function App() {
                   </div>
                 </div>
 
-                <div className="form-actions"><span>3 minutos para el domiciliario de la zona; luego 5 minutos para el apoyo.</span><button className="primary-button" disabled={publishing || !zone}>{publishing ? 'Publicando…' : 'Publicar domicilio'} <span>→</span></button></div>
+                <div className="form-actions"><span>3 minutos para el domiciliario de tu zona; luego 5 minutos para el resto del recorrido y el apoyo.</span><button className="primary-button" disabled={publishing || !zone}>{publishing ? 'Publicando…' : 'Publicar domicilio'} <span>→</span></button></div>
               </form>
             </section>
 
@@ -2069,6 +2072,7 @@ function App() {
           </div>
         ) : activeView === 'schedule' ? (
           <PharmacyScheduleView
+            zoneId={zone?.id}
             pharmacy={pharmacy}
             rows={weeklyZoneCouriers}
             breakdown={courierBreakdown}
@@ -2119,6 +2123,96 @@ function Field({ label, required, id, children }) {
   const labelContent = label && <span>{label}{required && <em> *</em>}</span>;
   if (!id) return <label className="field">{labelContent}{children}</label>;
   return <div className="field"><label className="field-label" htmlFor={id}>{labelContent}</label>{children}</div>;
+}
+
+// ---- Rediseño "en vivo" -----------------------------------------------------
+// Fondo animado: manchas de azul que se desplazan y rutas punteadas que
+// avanzan. Es decorativo (aria-hidden) y se detiene con "reducir movimiento".
+function LiveBackground() {
+  return <div className="live-bg" aria-hidden="true">
+    <div className="live-blob live-blob-1" />
+    <div className="live-blob live-blob-2" />
+    <div className="live-blob live-blob-3" />
+    <svg className="live-routes" viewBox="0 0 1000 700" preserveAspectRatio="none">
+      <path d="M40 640 C 260 520, 380 690, 600 540 S 900 380, 1000 430" />
+      <path d="M0 160 C 220 260, 360 80, 560 200 S 840 150, 1000 80" />
+      <path d="M120 400 C 300 330, 520 470, 760 330 S 960 260, 1000 300" />
+    </svg>
+  </div>;
+}
+
+function useNow(intervalMs = 1000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [intervalMs]);
+  return now;
+}
+
+// Número que sube hasta su valor al cambiar (los contadores del día).
+function CountUp({ value }) {
+  const [shown, setShown] = useState(value);
+  const previous = useRef(value);
+  useEffect(() => {
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const from = previous.current;
+    previous.current = value;
+    if (reduce || from === value) { setShown(value); return undefined; }
+    const started = performance.now();
+    let frame = 0;
+    const tick = (time) => {
+      const progress = Math.min(1, (time - started) / 700);
+      setShown(Math.round(from + (value - from) * (1 - (1 - progress) ** 3)));
+      if (progress < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [value]);
+  return <>{shown}</>;
+}
+
+function isTodayIso(value) {
+  return value ? localDateIso(new Date(value)) === localDateIso() : false;
+}
+
+// Resumen del día en la parte alta del panel.
+function LiveStats({ deliveries, couriersOnShift }) {
+  const today = deliveries.filter((item) => isTodayIso(item.created_at));
+  const stats = [
+    ['Publicados hoy', today.length],
+    ['En recorrido', today.filter((item) => ['accepted', 'pickedUp'].includes(item.status)).length],
+    ['Entregados', today.filter((item) => item.status === 'delivered').length],
+    ['Domiciliarios en turno', couriersOnShift],
+  ];
+  return <div className="live-stats" role="list">
+    {stats.map(([label, value]) => <div className="live-stat" role="listitem" key={label}>
+      <strong><CountUp value={value} /></strong>
+      <span>{label}</span>
+    </div>)}
+  </div>;
+}
+
+// Cuenta regresiva de la oferta: primero la reserva de la zona que pide,
+// luego el tiempo para el resto del recorrido y el apoyo.
+function OfferCountdown({ delivery }) {
+  const now = useNow(1000);
+  if (delivery.status !== 'offered' || !delivery.expires_at) return null;
+  const expires = new Date(delivery.expires_at).getTime();
+  const priority = delivery.priority_until ? new Date(delivery.priority_until).getTime() : null;
+  const created = new Date(delivery.created_at).getTime();
+  const inPriority = priority && priority > now;
+  const end = inPriority ? priority : expires;
+  const start = inPriority ? created : (priority || created);
+  const remaining = Math.max(0, end - now);
+  if (!inPriority && remaining === 0) return <small className="offer-countdown expired">Oferta vencida · puedes asignarla</small>;
+  const total = Math.max(1, end - start);
+  const minutes = Math.floor(remaining / 60000);
+  const seconds = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0');
+  return <div className="offer-countdown" aria-live="off">
+    <small>{inPriority ? 'Reservado para tu zona' : 'Abierto al recorrido y apoyo'} · {minutes}:{seconds}</small>
+    <span className="offer-track"><span style={{ transform: `scaleX(${remaining / total})` }} /></span>
+  </div>;
 }
 
 function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], onLoadCouriers, onAssign, onApproveDelivery, onRejectDelivery }) {
@@ -2178,6 +2272,7 @@ function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], on
       <div className="delivery-row-main">
         <strong>{formatDeliveryPublicCode(delivery.public_code) || delivery.id?.slice(0, 8)}</strong>
         <span>{delivery.client_name || 'Operación interna'} · {delivery.neighborhood || 'Sin destino'}</span>
+        <OfferCountdown delivery={delivery} />
       </div>
       <div className="delivery-row-side">
         <div className="delivery-row-status">
@@ -2239,7 +2334,65 @@ function WeeklyCourierSchedule({ rows }) {
   </section>;
 }
 
-function PharmacyScheduleView({ pharmacy, rows, breakdown, breakdownError, courierDeliveryDetails, breakdownLoading, onOpenEquivalent, onViewDetails }) {
+// Historial: los turnos de días anteriores quedan guardados en esta sección;
+// el panel principal muestra solo los de hoy.
+function ShiftHistory({ zoneId }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!supabase || !zoneId) return undefined;
+    let active = true;
+    const dates = Array.from({ length: 7 }, (_, index) => {
+      const date = new Date();
+      date.setDate(date.getDate() - (index + 1));
+      return localDateIso(date);
+    });
+    setLoading(true);
+    void Promise.all(dates.map((date) => supabase.rpc(
+      'get_pharmacy_zone_couriers',
+      { requested_zone_id: zoneId, requested_date: date },
+    ))).then((responses) => {
+      if (!active) return;
+      setRows(responses.flatMap((response) => response.data ?? []));
+      setLoading(false);
+    });
+    return () => { active = false; };
+  }, [zoneId]);
+
+  const groups = useMemo(() => {
+    const grouped = new Map();
+    for (const row of rows) {
+      const date = String(row.scheduled_for || '').slice(0, 10);
+      if (!date) continue;
+      if (!grouped.has(date)) grouped.set(date, []);
+      grouped.get(date).push(row);
+    }
+    return [...grouped.entries()].sort(([left], [right]) => right.localeCompare(left));
+  }, [rows]);
+
+  return <section className="info-card weekly-couriers-card shift-history-card">
+    <div className="info-card-header">
+      <span className="section-kicker">Historial</span>
+      <span className="live-pill">Últimos 7 días</span>
+    </div>
+    <h3>Turnos anteriores</h3>
+    {loading ? <p className="empty-zone-couriers">Cargando historial…</p> : groups.length === 0 ? <p className="empty-zone-couriers">No hubo turnos en los últimos 7 días.</p> : <div className="weekly-courier-groups">
+      {groups.map(([date, couriers]) => <details className="weekly-courier-day shift-history-day" key={date}>
+        <summary className="weekly-courier-day-heading">
+          <strong>{new Intl.DateTimeFormat('es-CO', { weekday: 'long', day: '2-digit', month: 'short' }).format(new Date(`${date}T12:00:00`))}</strong>
+          <span>{couriers.length} {couriers.length === 1 ? 'domiciliario' : 'domiciliarios'}</span>
+        </summary>
+        <div className="weekly-courier-names">
+          {couriers.map((courier) => <span className={courier.is_support ? 'weekly-courier-name support' : 'weekly-courier-name'} key={`${date}-${courier.courier_id}-${courier.starts_at}`}>
+            {courier.full_name || 'Domiciliario'}{courier.is_support ? ' · apoyo' : ''} · {formatTime(courier.starts_at)}–{formatTime(courier.ends_at)}
+          </span>)}
+        </div>
+      </details>)}
+    </div>}
+  </section>;
+}
+
+function PharmacyScheduleView({ pharmacy, zoneId, rows, breakdown, breakdownError, courierDeliveryDetails, breakdownLoading, onOpenEquivalent, onViewDetails }) {
   return <div className="pharmacy-page-grid">
     <section className="form-card schedule-page-card">
       <div className="card-heading">
@@ -2249,8 +2402,9 @@ function PharmacyScheduleView({ pharmacy, rows, breakdown, breakdownError, couri
         </div>
         <div className="zone-chip"><span /> {pharmacy.zone_name || 'Zona pendiente'}</div>
       </div>
-      <p className="page-intro">Consulta quién está disponible hoy. Al cambiar el día se muestran solo los turnos nuevos. Los apoyos generales aparecen aquí porque pueden atender cualquier farmacia.</p>
+      <p className="page-intro">Arriba, quién cubre hoy. Abajo queda guardado el historial de los días anteriores. Los apoyos generales aparecen porque pueden atender cualquier farmacia.</p>
       <WeeklyCourierSchedule rows={rows} />
+      <ShiftHistory zoneId={zoneId} />
     </section>
     <aside className="side-column">
       <CourierBreakdownCard

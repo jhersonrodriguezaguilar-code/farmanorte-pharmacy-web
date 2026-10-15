@@ -2920,3 +2920,89 @@ body { background: var(--fn-canvas); color: var(--fn-ink); }
   font-weight: 800;
   font-size: 13px;
 }
+
+/* Historial de turnos: cada día se despliega al tocarlo. */
+.shift-history-card { margin-top: 16px; }
+.shift-history-day summary { cursor: pointer; list-style: none; padding: 10px 0; }
+.shift-history-day summary::-webkit-details-marker { display: none; }
+.shift-history-day[open] summary { color: var(--fn-primary); }
+
+/* ==========================================================================
+ * Rediseño "en vivo" (0.21.1): fondo animado, vidrio y datos que se mueven.
+ * Todo el movimiento se detiene con prefers-reduced-motion.
+ * ======================================================================== */
+.main-content { position: relative; isolation: isolate; }
+.live-bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; background: var(--fn-canvas); }
+.live-blob { position: absolute; border-radius: 50%; filter: blur(56px); opacity: .7; will-change: transform; }
+.live-blob-1 { width: 520px; height: 520px; top: -160px; right: -120px; background: #c9dbff; animation: fn-drift-a 20s ease-in-out infinite alternate; }
+.live-blob-2 { width: 440px; height: 440px; bottom: -180px; left: 18%; background: #dce8ff; animation: fn-drift-b 24s ease-in-out infinite alternate; }
+.live-blob-3 { width: 300px; height: 300px; top: 38%; right: 22%; background: #bdeed8; opacity: .3; animation: fn-drift-a 28s ease-in-out infinite alternate-reverse; }
+@keyframes fn-drift-a { to { transform: translate(-140px, 90px) scale(1.12); } }
+@keyframes fn-drift-b { to { transform: translate(160px, -70px) scale(.9); } }
+.live-routes { position: absolute; inset: 0; width: 100%; height: 100%; }
+.live-routes path { fill: none; stroke: var(--fn-primary); stroke-opacity: .17; stroke-width: 2.2; stroke-linecap: round; stroke-dasharray: 2 12; animation: fn-travel 7s linear infinite; }
+.live-routes path:nth-child(2) { animation-duration: 10s; stroke-opacity: .08; }
+.live-routes path:nth-child(3) { animation-duration: 13s; stroke-opacity: .07; }
+@keyframes fn-travel { to { stroke-dashoffset: -140; } }
+
+/* Tarjetas de vidrio sobre el fondo vivo. */
+.form-card, .info-card, .process-card, .history-page, .operator-info {
+  background: rgba(255, 255, 255, .86);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* Contadores del día. */
+.live-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 0 0 18px; }
+.live-stat {
+  display: grid; gap: 2px; padding: 14px 16px;
+  border: 1px solid var(--fn-line); border-radius: 18px;
+  background: rgba(255, 255, 255, .82);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  transition: transform .25s ease, box-shadow .25s ease;
+}
+.live-stat:hover { transform: translateY(-3px); box-shadow: 0 14px 26px -18px rgba(0, 40, 117, .55); }
+.live-stat strong { color: var(--fn-primary-dark); font-size: 28px; font-weight: 900; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.live-stat span { color: var(--fn-muted); font-size: 12px; font-weight: 700; }
+
+/* "En vivo" late. */
+.live-pill { position: relative; }
+.live-pill::before { animation: fn-ping 1.8s ease-out infinite; }
+@keyframes fn-ping { 0% { box-shadow: 0 0 0 0 rgba(0, 51, 153, .45); } 100% { box-shadow: 0 0 0 9px rgba(0, 51, 153, 0); } }
+
+/* Menú: brillo suave en la sección activa. */
+.sidebar .nav-item { overflow: hidden; }
+.sidebar .nav-item.active::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(110deg, transparent 30%, rgba(0, 51, 153, .08) 50%, transparent 70%);
+  animation: fn-shine 3.6s ease-in-out infinite;
+}
+@keyframes fn-shine { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+
+/* Filas de pedido: responden al cursor. */
+.delivery-row { transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease; }
+.delivery-row:hover { transform: translateY(-2px); border-color: #9fbbea; box-shadow: 0 12px 22px -18px rgba(0, 40, 117, .6); }
+
+/* Botón publicar con brillo que pasa. */
+.form-actions .primary-button { position: relative; overflow: hidden; }
+.form-actions .primary-button::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(110deg, transparent 35%, rgba(255, 255, 255, .25) 50%, transparent 65%);
+  animation: fn-shine 2.8s ease-in-out infinite;
+}
+
+/* Cuenta regresiva de la oferta. */
+.offer-countdown { display: grid; gap: 5px; margin-top: 8px; max-width: 260px; }
+.offer-countdown small { color: var(--fn-primary); font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.offer-countdown.expired { color: var(--fn-warning-ink); font-size: 11px; font-weight: 800; }
+.offer-track { display: block; height: 6px; border-radius: 3px; background: var(--fn-soft); overflow: hidden; }
+.offer-track span { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--fn-primary), #4e7fd0); transform-origin: left; transition: transform 1s linear; }
+
+@media (max-width: 760px) {
+  .live-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .live-stat strong { font-size: 24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-blob, .live-routes path, .live-pill::before, .sidebar .nav-item.active::after, .form-actions .primary-button::before { animation: none !important; }
+  .live-stat, .delivery-row, .offer-track span { transition: none !important; }
+}

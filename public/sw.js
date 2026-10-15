@@ -1,4 +1,4 @@
-const CACHE_NAME = 'farmanorte-pharmacy-shell-v5';
+const CACHE_NAME = 'farmanorte-pharmacy-shell-v6';
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -74,21 +74,31 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
+  // La PWA de domiciliarios (/courier/) tiene su propio ciclo de versiones y
+  // archivos sin huella (main.dart.js): nunca se sirve desde esta caché.
+  if (url.pathname.includes('/courier/')) return;
+
   if (request.mode === 'navigate') {
-    // La navegación vuelve a abrirse desde caché de inmediato y se actualiza
-    // en segundo plano. Así no se queda esperando a GitHub Pages cada vez que
-    // el usuario sale y entra a la PWA.
+    // Primero la red, para que cada publicación se vea al abrir la página. La
+    // copia guardada solo se usa sin conexión.
     event.respondWith((async () => {
-      const cached = await caches.match(request);
-      const network = fetch(request)
-        .then((response) => {
-          const copy = response.clone();
-          void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-          return response;
-        })
-        .catch(() => cached);
-      return cached || network;
+      try {
+        const response = await fetch(request, { cache: 'no-store' });
+        const copy = response.clone();
+        void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+        return response;
+      } catch (_) {
+        return (await caches.match(request)) || Response.error();
+      }
     })());
+    return;
+  }
+
+  // Los archivos de Vite llevan huella en el nombre (index-AbC123.js): son
+  // inmutables y pueden salir de la caché. El resto se pide a la red.
+  const fingerprinted = /\/assets\/[^/]+-[A-Za-z0-9_-]{6,}\.(js|css|woff2?|png|svg|jpg|webp)$/.test(url.pathname);
+  if (!fingerprinted) {
+    event.respondWith(fetch(request).catch(() => caches.match(request)));
     return;
   }
 
