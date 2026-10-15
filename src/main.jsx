@@ -388,13 +388,22 @@ function buildDeliveryTasks(form) {
   return [...purchaseTasks, ...crossTasks];
 }
 
+function formatZoneName(name) {
+  const clean = String(name || '').trim();
+  if (!clean) return 'Zona pendiente';
+  return /^zona\s/i.test(clean) ? clean : `Zona ${clean}`;
+}
+
 function getErrorMessage(error) {
   if (!error) return 'Ocurrió un error inesperado.';
+  if (/JSON object requested|multiple \(or no\) rows/i.test(error.message || '')) {
+    return 'Los datos de tu farmacia no están completos. Pide al administrador que revise tu usuario.';
+  }
   if (error.message?.includes('Invalid login credentials')) {
     return 'Correo o contraseña incorrectos.';
   }
   if (error.message?.includes('Failed to fetch')) {
-    return 'No se pudo conectar con Supabase. Revisa la conexión.';
+    return 'No hay conexión con el servidor. Revisa tu internet e intenta de nuevo.';
   }
   return error.message || 'Ocurrió un error inesperado.';
 }
@@ -1892,8 +1901,8 @@ function App() {
           <div className="connection-card">
             <span className="pulse-dot" />
             <div>
-              <strong>Supabase conectado</strong>
-              <span>Datos reales en tiempo real</span>
+              <strong>Conectado</strong>
+              <span>Pedidos en tiempo real</span>
             </div>
           </div>
         </div>
@@ -1904,7 +1913,7 @@ function App() {
           <div>
             <p className="welcome-line">Bienvenido, {firstName}</p>
             <p className="eyebrow">Panel de farmacia <span className="live-pill">EN VIVO</span></p>
-            <h1>{activeView === 'publish' ? 'Nuevo domicilio' : activeView === 'history' ? 'Pedidos' : activeView === 'reception' ? 'Recepción' : activeView === 'schedule' ? 'Turnos de la semana' : 'Ajustes'}</h1>
+            <h1>{activeView === 'publish' ? 'Nuevo domicilio' : activeView === 'history' ? 'Pedidos' : activeView === 'reception' ? 'Recepción' : activeView === 'schedule' ? 'Turnos de hoy' : 'Ajustes'}</h1>
           </div>
           <div className="operator-info">
             <div className="operator-avatar">{(operatorName || 'F').slice(0, 1).toUpperCase()}</div>
@@ -1937,12 +1946,12 @@ function App() {
                   <span className="section-kicker">Salida inmediata</span>
                   <h2>Datos del domicilio</h2>
                 </div>
-                <div className="zone-chip"><span /> Zona {pharmacy.zone_name}</div>
+                <div className="zone-chip"><span /> {formatZoneName(pharmacy.zone_name)}</div>
               </div>
 
               <form onSubmit={publishDelivery}>
                 <div className="form-section operation-section">
-                  <div className="form-section-title"><span>01</span><div><strong>¿Qué necesitas gestionar?</strong><small>Elige la operación para mostrar solo los datos necesarios.</small></div></div>
+                  <div className="form-section-title"><span>1</span><div><strong>¿Qué necesitas gestionar?</strong><small>Elige la operación para mostrar solo los datos necesarios.</small></div></div>
                   <div className="operation-picker field">
                     <span>Tipo de operación <em> *</em></span>
                     <div className="service-type-grid" role="group" aria-label="Tipo de operación">
@@ -1953,7 +1962,7 @@ function App() {
                 </div>
 
                 {requiresClient && <div className="form-section">
-                  <div className="form-section-title"><span>02</span><div><strong>Cliente y ubicación</strong><small>Solo necesitamos nombre, teléfono y dirección completa.</small></div></div>
+                  <div className="form-section-title"><span>2</span><div><strong>Cliente y ubicación</strong><small>Solo necesitamos nombre, teléfono y dirección completa.</small></div></div>
                   <div className="field-grid three-columns customer-fields">
                     <Field label="Nombre del cliente" required><input value={form.clientName} onChange={(event) => setForm({ ...form, clientName: event.target.value })} placeholder="Nombre completo" autoComplete="name" /></Field>
                     <Field label="Teléfono" required><input value={form.clientPhone} onChange={(event) => setForm({ ...form, clientPhone: event.target.value.replace(/\D/g, '').slice(0, 10) })} placeholder="3000000000" inputMode="numeric" maxLength={10} autoComplete="tel" aria-describedby="client-phone-help" aria-invalid={Boolean(form.clientPhone && (form.clientPhone.length !== 10 || !form.clientPhone.startsWith('3')))} /><small id="client-phone-help" className="field-help">{form.clientPhone ? form.clientPhone.length !== 10 ? `Número incompleto: te faltan ${10 - form.clientPhone.length}.` : form.clientPhone.startsWith('3') ? 'Número completo.' : 'Debe empezar por 3.' : 'Debe empezar por 3 y tener exactamente 10 números.'}</small>{customerLookupLoading && <small className="field-help">Buscando cliente registrado…</small>}{customerMatches.length > 1 && <div className="customer-picker"><span>Este teléfono tiene varios clientes</span>{customerMatches.map((customer) => <button type="button" key={customer.id} className={selectedCustomerId === customer.id ? 'customer-choice active' : 'customer-choice'} onClick={() => chooseCustomer(customer)}>{`${customer.first_name || ''} ${customer.last_name || ''}`.trim() || 'Cliente registrado'}</button>)}</div>}{selectedCustomerId && customerAddresses.length > 0 && <label className="saved-address-picker"><span>Dirección guardada</span><select value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })}><option value="">Selecciona una dirección</option>{customerAddresses.map((address) => <option key={address.id} value={address.address}>{address.label || address.address}</option>)}</select></label>}</Field>
@@ -2003,7 +2012,7 @@ function App() {
             </section>
 
             <aside className="side-column">
-              <div className="info-card accent-card"><span className="card-icon">⌁</span><div><span className="section-kicker">Estado operativo</span><h3>{zone ? `Zona ${zone.name}` : 'Zona pendiente'}</h3><p>{zone ? 'Las ofertas serán visibles para domiciliarios conectados con esta zona asignada.' : 'Configura la zona en el panel administrador para habilitar publicaciones.'}</p></div></div>
+              <div className="info-card accent-card"><span className="card-icon">⌁</span><div><span className="section-kicker">Estado operativo</span><h3>{zone ? formatZoneName(zone.name) : 'Zona pendiente'}</h3><p>{zone ? 'Las ofertas serán visibles para domiciliarios conectados con esta zona asignada.' : 'Configura la zona en el panel administrador para habilitar publicaciones.'}</p></div></div>
               <div className="info-card zone-couriers-card">
                 <div className="info-card-header">
                   <span className="section-kicker">Cobertura de hoy</span>
@@ -2025,7 +2034,6 @@ function App() {
                   </div>
                 ) : <p className="empty-zone-couriers">No hay un domiciliario programado para esta zona hoy.</p>}
               </div>
-              <WeeklyCourierSchedule rows={weeklyZoneCouriers} />
               <CourierBreakdownCard
                 breakdown={courierBreakdown}
                 deliveries={courierDeliveryDetails}
@@ -2259,7 +2267,7 @@ function PharmacySettingsView({ pharmacy, profile, profiles, webPushState, onEna
     <section className="form-card settings-page-card">
       <div className="card-heading">
         <div><span className="section-kicker">Cuenta operativa</span><h2>Ajustes de farmacia</h2></div>
-        <span className="live-pill">Supabase conectado</span>
+        <span className="live-pill">Conectado</span>
       </div>
       <div className="settings-summary-grid">
         <div className="settings-summary-item"><span>Farmacia</span><strong>{formatPharmacyDisplay(pharmacy)}</strong><small>{pharmacy.zone_name || 'Zona pendiente'}</small></div>
@@ -2357,7 +2365,7 @@ function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliv
         <div>
           <span className="section-kicker">{isReception ? 'Soportes de' : 'Pedidos de'} {formatPharmacyDisplay(pharmacy)}</span>
           <h2>{isReception ? 'Recepción de equivalentes' : 'Todos los pedidos'}</h2>
-          <p>{isReception ? 'Revisa los servicios finalizados y abre el equivalente firmado para confirmar su recepción.' : 'Pedidos recibidos directamente desde Supabase. No hay registros locales.'}</p>
+          <p>{isReception ? 'Revisa los servicios finalizados y abre el equivalente firmado para confirmar su recepción.' : 'Los pedidos se actualizan solos en tiempo real.'}</p>
         </div>
         {!isReception && <div className="filter-row">
           {[
