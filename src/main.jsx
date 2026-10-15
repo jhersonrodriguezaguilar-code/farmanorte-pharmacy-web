@@ -1242,6 +1242,9 @@ function App() {
       setLoading(false);
 
       const knownDeliveryIds = new Set((deliveryData ?? []).map((item) => item.id));
+      // Estado previo de cada domicilio, para avisar cuando un domiciliario
+      // libera uno que tenía (vuelve de "aceptado" a "publicado").
+      const knownStatuses = new Map((deliveryData ?? []).map((item) => [item.id, item.status]));
 
       if (channel) {
         await supabase.removeChannel(channel);
@@ -1266,6 +1269,14 @@ function App() {
               }
             }
             if (payload.eventType === 'DELETE') knownDeliveryIds.delete(payload.old.id);
+            if (payload.eventType === 'UPDATE') {
+              const previousStatus = knownStatuses.get(payload.new.id);
+              if (previousStatus === 'accepted' && payload.new.status === 'offered') {
+                playNotificationTone('delivery');
+                setNotice(`El domiciliario liberó ${formatDeliveryPublicCode(payload.new.public_code) || 'un domicilio'}. Se publicó de nuevo para otros domiciliarios.`);
+              }
+            }
+            if (payload.new?.id) knownStatuses.set(payload.new.id, payload.new.status);
             setDeliveries((current) => {
               if (payload.eventType === 'DELETE') {
                 return current.filter((item) => item.id !== payload.old.id);
@@ -2215,6 +2226,13 @@ function OfferCountdown({ delivery }) {
   </div>;
 }
 
+const CANCEL_REASONS = [
+  'El cliente ya no lo necesita',
+  'El cliente no responde',
+  'Error al publicar',
+  'Otro motivo',
+];
+
 function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], onLoadCouriers, onAssign, onApproveDelivery, onRejectDelivery }) {
   const [assignmentOpen, setAssignmentOpen] = useState(false);
   const [assignmentCouriers, setAssignmentCouriers] = useState(couriers);
@@ -2223,7 +2241,36 @@ function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], on
   const [selectedCourierId, setSelectedCourierId] = useState('');
   const [assigning, setAssigning] = useState(false);
   const [approvalAction, setApprovalAction] = useState('');
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState(CANCEL_REASONS[0]);
+  const [cancelOther, setCancelOther] = useState('');
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState('');
   const [statusLabel, statusClass] = DELIVERY_STATUS[delivery.status] || ['Sin estado', 'status-cancelled'];
+  // Migración 042: la farmacia cancela mientras el domicilio siga activo.
+  const canCancel = Boolean(onAssign) && ['offered', 'accepted', 'pickedUp'].includes(delivery.status);
+  const submitCancel = async () => {
+    const reason = cancelReason === 'Otro motivo' ? cancelOther.trim() : cancelReason;
+    if (reason.length < 3) {
+      setCancelError('Escribe el motivo de la cancelación.');
+      return;
+    }
+    setCancelling(true);
+    setCancelError('');
+    const { error } = await supabase.rpc('cancel_delivery', {
+      requested_delivery_id: delivery.id,
+      requested_reason: reason,
+    });
+    setCancelling(false);
+    if (error) {
+      setCancelError(getErrorMessage(error));
+      return;
+    }
+    setCancelOpen(false);
+    if (delivery.accepted_courier_id) {
+      triggerPushNotification({ event: 'delivery_cancelled', delivery_id: delivery.id });
+    }
+  };
   const isTerminal = delivery.status === 'delivered' || delivery.status === 'notDelivered';
   const canAssign = Boolean(onAssign && ['offered', 'accepted'].includes(delivery.status));
   const assignmentControlsId = `delivery-assignment-${delivery.id}`;
@@ -2289,7 +2336,17 @@ function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], on
           {onOpenChat && <button type="button" className="delivery-chat-button" onClick={() => onOpenChat(delivery.id)}>Abrir chat</button>}
           {canAssign && <button type="button" className="delivery-equivalent-button" aria-expanded={assignmentOpen} aria-controls={assignmentControlsId} disabled={loadingAssignmentCouriers} onClick={toggleAssignment}>{loadingAssignmentCouriers ? 'Buscando…' : assignmentOpen ? 'Cerrar' : 'Asignar'}</button>}
           {onOpenEquivalent && isTerminal && <button type="button" className="delivery-equivalent-button" onClick={() => onOpenEquivalent(delivery.id)}>Equivalente</button>}
+          {canCancel && <button type="button" className="delivery-cancel-button" aria-expanded={cancelOpen} onClick={() => { setCancelOpen((open) => !open); setCancelError(''); }}>{cancelOpen ? 'Cerrar' : 'Cancelar'}</button>}
         </div>
+        {delivery.status === 'cancelled' && delivery.cancellation_reason && <small className="delivery-cancel-note">Cancelado: {delivery.cancellation_reason}</small>}
+        {cancelOpen && <div className="delivery-cancel-controls" role="group" aria-label="Cancelar domicilio">
+          <strong>¿Cancelar {formatDeliveryPublicCode(delivery.public_code) || 'este domicilio'}?</strong>
+          {delivery.accepted_courier_id && <span>Avisaremos al domiciliario asignado para que no lo recoja{delivery.status === 'pickedUp' ? ' y devuelva lo que lleva' : ''}.</span>}
+          <label><span>Motivo</span><select value={cancelReason} onChange={(event) => setCancelReason(event.target.value)}>{CANCEL_REASONS.map((reason) => <option key={reason} value={reason}>{reason}</option>)}</select></label>
+          {cancelReason === 'Otro motivo' && <label><span>Escribe el motivo</span><input value={cancelOther} onChange={(event) => setCancelOther(event.target.value)} maxLength={300} placeholder="Ej. el cliente lo recogió en la farmacia" /></label>}
+          {cancelError && <p className="empty-zone-couriers" role="alert">{cancelError}</p>}
+          <button type="button" className="danger-button compact-button" disabled={cancelling} onClick={submitCancel}>{cancelling ? 'Cancelando…' : 'Sí, cancelar domicilio'}</button>
+        </div>}
         {assignmentOpen && <div id={assignmentControlsId} className="delivery-assignment-controls">{assignmentLoadError ? <p className="empty-zone-couriers" role="alert">No se pudo cargar la cobertura: {assignmentLoadError}</p> : assignmentCouriers.length > 0 ? <><label><span>Asignar a</span><select value={selectedCourierId} onChange={(event) => setSelectedCourierId(event.target.value)}><option value="">Selecciona un domiciliario</option>{assignmentCouriers.map((courier) => <option key={courier.courier_id} value={courier.courier_id}>{courier.full_name || 'Domiciliario'}{courier.is_support ? ' · Apoyo general' : ` · ${courier.zone_name || 'Zona del recorrido'}`}</option>)}</select></label><button type="button" className="primary-button compact-button" disabled={!selectedCourierId || assigning} onClick={submitAssignment}>{assigning ? 'Guardando…' : 'Confirmar'}</button></> : <p className="empty-zone-couriers">No hay domiciliarios con turno vigente en las zonas de este recorrido.</p>}</div>}
       </div>
     </div>

@@ -3006,3 +3006,23 @@ body { background: var(--fn-canvas); color: var(--fn-ink); }
   .live-blob, .live-routes path, .live-pill::before, .sidebar .nav-item.active::after, .form-actions .primary-button::before { animation: none !important; }
   .live-stat, .delivery-row, .offer-track span { transition: none !important; }
 }
+
+/* Cancelar domicilio (migración 042). */
+.delivery-cancel-button {
+  min-height: 32px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid #f2c4c4; background: var(--fn-danger-soft); color: var(--fn-danger);
+  font-size: 11px; font-weight: 800; cursor: pointer;
+}
+.delivery-cancel-controls {
+  display: grid; gap: 8px; margin-top: 10px; padding: 12px;
+  border: 1px solid #f2c4c4; border-radius: 16px; background: #fff8f8; text-align: left;
+}
+.delivery-cancel-controls strong { color: var(--fn-ink); font-size: 13px; }
+.delivery-cancel-controls span { color: var(--fn-muted); font-size: 12px; }
+.delivery-cancel-controls label { display: grid; gap: 4px; }
+.delivery-cancel-controls select, .delivery-cancel-controls input {
+  min-height: 40px; padding: 0 10px; border: 1px solid var(--fn-line); border-radius: 12px; background: #fff;
+}
+.danger-button { min-height: 40px; border: 0; border-radius: 14px; background: var(--fn-danger); color: #fff; font-weight: 800; cursor: pointer; }
+.danger-button:disabled { opacity: .6; cursor: default; }
+.delivery-cancel-note { display: block; margin-top: 6px; color: var(--fn-danger); font-size: 11px; font-weight: 700; }
