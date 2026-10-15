@@ -336,6 +336,13 @@ function formatPharmacyCodeLabel(code) {
   return normalized ? `FN ${normalized.toUpperCase()}` : 'FN';
 }
 
+function formatDeliveryPublicCode(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const compact = raw.toUpperCase().replace(/[\s_-]+/g, '');
+  return /^FN\d{4,}$/.test(compact) ? compact : raw.toUpperCase();
+}
+
 function getServiceTypeConfig(value) {
   return SERVICE_TYPES.find((service) => service.value === value) ?? SERVICE_TYPES[0];
 }
@@ -379,10 +386,6 @@ function buildDeliveryTasks(form) {
     return_to_pharmacy: false,
   }));
   return [...purchaseTasks, ...crossTasks];
-}
-
-function makePublicCode(pharmacyCode, sequence) {
-  return `FN ${pharmacyCode} ${String(sequence).padStart(2, '0')}`;
 }
 
 function getErrorMessage(error) {
@@ -930,7 +933,9 @@ function App() {
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
   const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
   const [courierBreakdown, setCourierBreakdown] = useState([]);
+  const [courierDeliveryDetails, setCourierDeliveryDetails] = useState([]);
   const [courierBreakdownError, setCourierBreakdownError] = useState('');
+  const [courierBreakdownLoading, setCourierBreakdownLoading] = useState(false);
   const [loading, setLoading] = useState(Boolean(supabase));
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -985,7 +990,9 @@ function App() {
       setCustomerAddresses([]);
       setSelectedCustomerId('');
       setCourierBreakdown([]);
+      setCourierDeliveryDetails([]);
       setCourierBreakdownError('');
+      setCourierBreakdownLoading(false);
       setChatDeliveryId(null);
       setEquivalentDeliveryId(null);
     };
@@ -1089,18 +1096,37 @@ function App() {
       setPharmacy(pharmacyData);
 
       const loadCourierBreakdown = async (pharmacyCode) => {
-        const { data: breakdownData, error: breakdownError } = await supabase.rpc(
-          'get_pharmacy_courier_breakdown',
-          { requested_pharmacy_code: pharmacyCode },
-        );
-        if (!isCurrent()) return;
-        if (breakdownError) {
+        setCourierBreakdownLoading(true);
+        try {
+          const [breakdownResponse, detailResponse] = await Promise.all([
+            supabase.rpc(
+              'get_pharmacy_courier_breakdown',
+              { requested_pharmacy_code: pharmacyCode },
+            ),
+            supabase.rpc(
+              'get_pharmacy_courier_deliveries',
+              { requested_pharmacy_code: pharmacyCode },
+            ),
+          ]);
+          if (!isCurrent()) return;
+          const responseError = breakdownResponse.error || detailResponse.error;
+          if (responseError) {
+            setCourierBreakdown([]);
+            setCourierDeliveryDetails([]);
+            setCourierBreakdownError(getErrorMessage(responseError));
+            return;
+          }
+          setCourierBreakdown(breakdownResponse.data ?? []);
+          setCourierDeliveryDetails(detailResponse.data ?? []);
+          setCourierBreakdownError('');
+        } catch (reportError) {
+          if (!isCurrent()) return;
           setCourierBreakdown([]);
-          setCourierBreakdownError(getErrorMessage(breakdownError));
-          return;
+          setCourierDeliveryDetails([]);
+          setCourierBreakdownError(getErrorMessage(reportError));
+        } finally {
+          if (isCurrent()) setCourierBreakdownLoading(false);
         }
-        setCourierBreakdown(breakdownData ?? []);
-        setCourierBreakdownError('');
       };
 
       // El catálogo solo se usa al elegir un cruce/compra. No debe bloquear la
@@ -1245,7 +1271,7 @@ function App() {
               knownDeliveryIds.add(payload.new.id);
               if (payload.new.status === 'offered') {
                 playNotificationTone('delivery');
-                setNotice(`Nuevo domicilio disponible: ${payload.new.public_code || payload.new.id?.slice(0, 8)}`);
+                setNotice(`Nuevo domicilio disponible: ${formatDeliveryPublicCode(payload.new.public_code) || payload.new.id?.slice(0, 8)}`);
               }
             }
             if (payload.eventType === 'DELETE') knownDeliveryIds.delete(payload.old.id);
@@ -1379,7 +1405,9 @@ function App() {
       setZoneCouriers([]);
       setDeliveries([]);
       setCourierBreakdown([]);
+      setCourierDeliveryDetails([]);
       setCourierBreakdownError('');
+      setCourierBreakdownLoading(false);
       setChatDeliveryId(null);
       setEquivalentDeliveryId(null);
       setForm(createEmptyForm());
@@ -1438,9 +1466,20 @@ function App() {
       return false;
     }
     triggerPushNotification({ event: 'delivery_assigned', delivery_id: deliveryId });
-    const courier = assignedCouriers.find((item) => item.courier_id === courierId);
-    setNotice(`Domicilio reasignado a ${courier?.full_name || 'el domiciliario seleccionado'}.`);
+    setNotice('Domicilio asignado correctamente.');
     return true;
+  };
+
+  const loadDeliveryCouriers = async (deliveryId) => {
+    if (!supabase || !deliveryId) {
+      throw new Error('No hay una sesión activa para consultar la cobertura del recorrido.');
+    }
+    const { data, error: couriersError } = await supabase.rpc(
+      'get_pharmacy_delivery_couriers',
+      { requested_delivery_id: deliveryId, requested_date: localDateIso() },
+    );
+    if (couriersError) throw new Error(getErrorMessage(couriersError));
+    return Array.isArray(data) ? data : [];
   };
 
   const respondToDeliveryApproval = async (deliveryId, approved) => {
@@ -1711,15 +1750,6 @@ function App() {
       customerAddressId = customerRow?.customer_address_id || null;
     }
     const deliveryTasks = buildDeliveryTasks(form);
-    const { count: pharmacyDeliveryCount, error: codeCountError } = await supabase
-      .from('deliveries')
-      .select('id', { count: 'exact', head: true })
-      .eq('pharmacy_code', pharmacy.code);
-    if (codeCountError) {
-      setError(`No se pudo generar el consecutivo del domicilio: ${getErrorMessage(codeCountError)}`);
-      setPublishing(false);
-      return;
-    }
     const routeLabel = form.crossStops.length > 0
       ? form.crossStops.map((stop) => `${pharmacyLabel(stop.originPharmacyCode)} → ${pharmacyLabel(stop.destinationPharmacyCode)}`).join(' · ')
       : form.purchaseItems.map((item) => `${item.merchant} · ${item.branch}`).join(' · ');
@@ -1739,7 +1769,8 @@ function App() {
     ];
 
     const payload = {
-      public_code: makePublicCode(pharmacy.code, (pharmacyDeliveryCount ?? 0) + 1),
+      // Supabase asigna el consecutivo atómicamente por farmacia.
+      public_code: null,
       pharmacy_code: pharmacy.code,
       zone_id: zone.id,
       kind: form.kind,
@@ -1801,7 +1832,7 @@ function App() {
     setForm(createEmptyForm());
     setActiveView('history');
     setPublishing(false);
-    setNotice(`Domicilio ${data.public_code} publicado. La oferta vence en 5 minutos.`);
+    setNotice(`Domicilio ${formatDeliveryPublicCode(data.public_code)} publicado. La oferta vence en 5 minutos.`);
   };
 
   if (!supabase) return <ConfigScreen />;
@@ -1839,6 +1870,11 @@ function App() {
     setEquivalentDeliveryId(deliveryId);
     if (deliveryId) setChatDeliveryId(null);
   };
+  const openReportedEquivalent = (deliveryId) => {
+    selectEquivalentDelivery(deliveryId);
+    setActiveView('reception');
+  };
+  const openReportDetails = () => setActiveView('reception');
 
   return (
     <div className="app-shell">
@@ -2013,9 +2049,14 @@ function App() {
               <WeeklyCourierSchedule rows={weeklyZoneCouriers} />
               <CourierBreakdownCard
                 breakdown={courierBreakdown}
+                deliveries={courierDeliveryDetails}
                 error={courierBreakdownError}
+                loading={courierBreakdownLoading}
+                compact
+                onOpenEquivalent={openReportedEquivalent}
+                onViewDetails={openReportDetails}
               />
-              <div className="info-card"><div className="info-card-header"><span className="section-kicker">Actividad reciente</span><button type="button" onClick={() => setActiveView('history')}>Ver todo →</button></div>{deliveries.slice(0, 3).map((delivery) => <DeliveryRow key={delivery.id} delivery={delivery} couriers={assignedCouriers} onAssign={assignDelivery} onApproveDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, true)} onRejectDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, false)} onOpenChat={(deliveryId) => { selectChatDelivery(deliveryId); setActiveView('history'); }} onOpenEquivalent={(deliveryId) => { selectEquivalentDelivery(deliveryId); setActiveView('history'); }} />)}{deliveries.length === 0 && <EmptyActivity />}</div>
+              <div className="info-card"><div className="info-card-header"><span className="section-kicker">Actividad reciente</span><button type="button" onClick={() => setActiveView('history')}>Ver todo →</button></div>{deliveries.slice(0, 3).map((delivery) => <DeliveryRow key={delivery.id} delivery={delivery} couriers={assignedCouriers} onLoadCouriers={loadDeliveryCouriers} onAssign={assignDelivery} onApproveDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, true)} onRejectDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, false)} onOpenChat={(deliveryId) => { selectChatDelivery(deliveryId); setActiveView('history'); }} onOpenEquivalent={(deliveryId) => { selectEquivalentDelivery(deliveryId); setActiveView('history'); }} />)}{deliveries.length === 0 && <EmptyActivity />}</div>
               <div className="process-card"><span className="section-kicker">Flujo registrado</span><div className="process-step"><span>1</span><div><strong>Publicas</strong><small>Oferta abierta por 5 min</small></div></div><div className="process-line" /><div className="process-step"><span>2</span><div><strong>Se acepta</strong><small>El domiciliario recibe el aviso</small></div></div><div className="process-line" /><div className="process-step"><span>3</span><div><strong>Se entrega</strong><small>El pedido queda registrado</small></div></div></div>
             </aside>
           </div>
@@ -2025,6 +2066,10 @@ function App() {
             rows={weeklyZoneCouriers}
             breakdown={courierBreakdown}
             breakdownError={courierBreakdownError}
+            courierDeliveryDetails={courierDeliveryDetails}
+            breakdownLoading={courierBreakdownLoading}
+            onOpenEquivalent={openReportedEquivalent}
+            onViewDetails={openReportDetails}
           />
         ) : activeView === 'settings' ? (
           <PharmacySettingsView
@@ -2047,11 +2092,14 @@ function App() {
             selectedEquivalentDeliveryId={equivalentDeliveryId}
             onOpenEquivalent={selectEquivalentDelivery}
             couriers={assignedCouriers}
+            onLoadCouriers={loadDeliveryCouriers}
             onAssign={assignDelivery}
             onApproveDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, true)}
             onRejectDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, false)}
             courierBreakdown={courierBreakdown}
             courierBreakdownError={courierBreakdownError}
+            courierDeliveryDetails={courierDeliveryDetails}
+            courierBreakdownLoading={courierBreakdownLoading}
             viewMode={activeView}
           />
         )}
@@ -2066,15 +2114,41 @@ function Field({ label, required, id, children }) {
   return <div className="field"><label className="field-label" htmlFor={id}>{labelContent}</label>{children}</div>;
 }
 
-function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], onAssign, onApproveDelivery, onRejectDelivery }) {
+function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], onLoadCouriers, onAssign, onApproveDelivery, onRejectDelivery }) {
   const [assignmentOpen, setAssignmentOpen] = useState(false);
+  const [assignmentCouriers, setAssignmentCouriers] = useState(couriers);
+  const [loadingAssignmentCouriers, setLoadingAssignmentCouriers] = useState(false);
+  const [assignmentLoadError, setAssignmentLoadError] = useState('');
   const [selectedCourierId, setSelectedCourierId] = useState('');
   const [assigning, setAssigning] = useState(false);
   const [approvalAction, setApprovalAction] = useState('');
   const [statusLabel, statusClass] = DELIVERY_STATUS[delivery.status] || ['Sin estado', 'status-cancelled'];
   const isTerminal = delivery.status === 'delivered' || delivery.status === 'notDelivered';
-  const canAssign = Boolean(onAssign && couriers.length > 0 && ['offered', 'accepted'].includes(delivery.status));
+  const canAssign = Boolean(onAssign && ['offered', 'accepted'].includes(delivery.status));
   const assignmentControlsId = `delivery-assignment-${delivery.id}`;
+  const toggleAssignment = async () => {
+    if (assignmentOpen) {
+      setAssignmentOpen(false);
+      return;
+    }
+    setAssignmentLoadError('');
+    if (!onLoadCouriers) {
+      setAssignmentCouriers(couriers);
+      setAssignmentOpen(true);
+      return;
+    }
+    setLoadingAssignmentCouriers(true);
+    try {
+      setAssignmentCouriers(await onLoadCouriers(delivery.id));
+      setAssignmentOpen(true);
+    } catch (error) {
+      setAssignmentCouriers([]);
+      setAssignmentLoadError(error?.message || 'No se pudo consultar la cobertura del recorrido.');
+      setAssignmentOpen(true);
+    } finally {
+      setLoadingAssignmentCouriers(false);
+    }
+  };
   const submitAssignment = async () => {
     if (!selectedCourierId || !onAssign) return;
     setAssigning(true);
@@ -2095,7 +2169,7 @@ function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], on
   return (
     <div className="delivery-row">
       <div className="delivery-row-main">
-        <strong>{delivery.public_code || delivery.id?.slice(0, 8)}</strong>
+        <strong>{formatDeliveryPublicCode(delivery.public_code) || delivery.id?.slice(0, 8)}</strong>
         <span>{delivery.client_name || 'Operación interna'} · {delivery.neighborhood || 'Sin destino'}</span>
       </div>
       <div className="delivery-row-side">
@@ -2111,10 +2185,10 @@ function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], on
         {delivery.approval_pending && <div className="approval-request"><strong>{delivery.approval_courier_name || 'Un domiciliario'} solicita un segundo domicilio.</strong><div><button type="button" className="secondary-button compact-button" disabled={Boolean(approvalAction)} onClick={() => respondToApproval(false)}>{approvalAction === 'reject' ? 'Rechazando…' : 'Rechazar'}</button><button type="button" className="primary-button compact-button" disabled={Boolean(approvalAction)} onClick={() => respondToApproval(true)}>{approvalAction === 'approve' ? 'Aprobando…' : 'Aprobar'}</button></div></div>}
         <div className="delivery-row-actions">
           {onOpenChat && <button type="button" className="delivery-chat-button" onClick={() => onOpenChat(delivery.id)}>Abrir chat</button>}
-          {canAssign && <button type="button" className="delivery-equivalent-button" aria-expanded={assignmentOpen} aria-controls={assignmentControlsId} onClick={() => setAssignmentOpen((open) => !open)}>{assignmentOpen ? 'Cerrar' : 'Asignar'}</button>}
+          {canAssign && <button type="button" className="delivery-equivalent-button" aria-expanded={assignmentOpen} aria-controls={assignmentControlsId} disabled={loadingAssignmentCouriers} onClick={toggleAssignment}>{loadingAssignmentCouriers ? 'Buscando…' : assignmentOpen ? 'Cerrar' : 'Asignar'}</button>}
           {onOpenEquivalent && isTerminal && <button type="button" className="delivery-equivalent-button" onClick={() => onOpenEquivalent(delivery.id)}>Equivalente</button>}
         </div>
-        {assignmentOpen && <div id={assignmentControlsId} className="delivery-assignment-controls"><label><span>Asignar a</span><select value={selectedCourierId} onChange={(event) => setSelectedCourierId(event.target.value)}><option value="">Selecciona un domiciliario</option>{couriers.map((courier) => <option key={courier.courier_id} value={courier.courier_id}>{courier.full_name || 'Domiciliario'}{courier.is_support ? ' · Apoyo general' : ''}</option>)}</select></label><button type="button" className="primary-button compact-button" disabled={!selectedCourierId || assigning} onClick={submitAssignment}>{assigning ? 'Guardando…' : 'Confirmar'}</button></div>}
+        {assignmentOpen && <div id={assignmentControlsId} className="delivery-assignment-controls">{assignmentLoadError ? <p className="empty-zone-couriers" role="alert">No se pudo cargar la cobertura: {assignmentLoadError}</p> : assignmentCouriers.length > 0 ? <><label><span>Asignar a</span><select value={selectedCourierId} onChange={(event) => setSelectedCourierId(event.target.value)}><option value="">Selecciona un domiciliario</option>{assignmentCouriers.map((courier) => <option key={courier.courier_id} value={courier.courier_id}>{courier.full_name || 'Domiciliario'}{courier.is_support ? ' · Apoyo general' : ` · ${courier.zone_name || 'Zona del recorrido'}`}</option>)}</select></label><button type="button" className="primary-button compact-button" disabled={!selectedCourierId || assigning} onClick={submitAssignment}>{assigning ? 'Guardando…' : 'Confirmar'}</button></> : <p className="empty-zone-couriers">No hay domiciliarios con turno vigente en las zonas de este recorrido.</p>}</div>}
       </div>
     </div>
   );
@@ -2158,7 +2232,7 @@ function WeeklyCourierSchedule({ rows }) {
   </section>;
 }
 
-function PharmacyScheduleView({ pharmacy, rows, breakdown, breakdownError }) {
+function PharmacyScheduleView({ pharmacy, rows, breakdown, breakdownError, courierDeliveryDetails, breakdownLoading, onOpenEquivalent, onViewDetails }) {
   return <div className="pharmacy-page-grid">
     <section className="form-card schedule-page-card">
       <div className="card-heading">
@@ -2172,7 +2246,15 @@ function PharmacyScheduleView({ pharmacy, rows, breakdown, breakdownError }) {
       <WeeklyCourierSchedule rows={rows} />
     </section>
     <aside className="side-column">
-      <CourierBreakdownCard breakdown={breakdown} error={breakdownError} />
+      <CourierBreakdownCard
+        breakdown={breakdown}
+        deliveries={courierDeliveryDetails}
+        error={breakdownError}
+        loading={breakdownLoading}
+        compact
+        onOpenEquivalent={onOpenEquivalent}
+        onViewDetails={onViewDetails}
+      />
       <div className="info-card accent-card">
         <span className="card-icon">⌁</span>
         <div><span className="section-kicker">Regla operativa</span><h3>Apoyo general</h3><p>Si la farmacia necesita mover un domicilio, puede asignarlo a un apoyo elegible de la zona.</p></div>
@@ -2221,17 +2303,62 @@ function PharmacySettingsView({ pharmacy, profile, profiles, webPushState, onEna
   </div>;
 }
 
-function CourierBreakdownCard({ breakdown, error, compact = false }) {
+function CourierBreakdownCard({ breakdown, deliveries = [], error, loading = false, compact = false, onOpenEquivalent, onViewDetails }) {
+  const deliveriesByCourier = new Map();
+  for (const delivery of deliveries) {
+    const courierId = delivery.courier_id;
+    if (!courierId) continue;
+    const current = deliveriesByCourier.get(courierId) ?? [];
+    current.push(delivery);
+    deliveriesByCourier.set(courierId, current);
+  }
+
+  const totalDeliveryRows = deliveries.length;
+  const visibleDeliveryRows = compact
+    ? [...deliveriesByCourier.values()].reduce((count, rows) => count + Math.min(rows.length, 2), 0)
+    : totalDeliveryRows;
+
   return <section className={compact ? 'courier-breakdown-card compact' : 'courier-breakdown-card'}>
     <div className="courier-breakdown-heading">
-      <div><span className="section-kicker">Rendimiento real</span><h3>Domicilios por domiciliario</h3><p>Solo cuenta servicios entregados y firmados.</p></div>
-      <span className="courier-breakdown-icon">↗</span>
+      <div><span className="section-kicker">Rendimiento real</span><h3>Ganancias por domiciliario</h3><p>Cuenta entregas; la ganancia se libera al firmar el equivalente.</p></div>
+      <span className="courier-breakdown-icon" aria-hidden="true">↗</span>
     </div>
-    {error ? <p className="courier-breakdown-empty">El desglose todavía no está disponible. Ejecuta la actualización de Supabase para activarlo.</p> : breakdown.length === 0 ? <p className="courier-breakdown-empty">Aún no hay domicilios firmados para mostrar.</p> : <div className="courier-breakdown-list">{breakdown.map((item) => <div className="courier-breakdown-row" key={item.courier_id}><div className="courier-breakdown-avatar">{(item.courier_name || 'D').slice(0, 1).toUpperCase()}</div><div className="courier-breakdown-main"><strong>{item.courier_name || 'Domiciliario'}</strong><span>{item.service_count} domicilio{item.service_count === 1 ? '' : 's'} · {item.base_count} base · {item.support_count} apoyo</span></div><strong className="courier-breakdown-amount">{formatMoney(item.total_earnings)}</strong></div>)}</div>}
+    {loading ? <p className="courier-breakdown-empty" role="status">Cargando servicios y equivalentes…</p>
+      : error ? <p className="courier-breakdown-empty" role="alert">No se pudo cargar el desglose: {error}</p>
+        : breakdown.length === 0 ? <p className="courier-breakdown-empty">Aún no hay domicilios entregados para mostrar.</p>
+          : <div className="courier-breakdown-list">{breakdown.map((item) => {
+            const courierDeliveries = deliveriesByCourier.get(item.courier_id) ?? [];
+            const visibleDeliveries = compact ? courierDeliveries.slice(0, 2) : courierDeliveries;
+            return <div className="courier-breakdown-group" key={item.courier_id}>
+              <div className="courier-breakdown-row">
+                <div className="courier-breakdown-avatar" aria-hidden="true">{(item.courier_name || 'D').slice(0, 1).toUpperCase()}</div>
+                <div className="courier-breakdown-main"><strong>{item.courier_name || 'Domiciliario'}</strong><span>{item.service_count} entregado{item.service_count === 1 ? '' : 's'} · {item.base_count} base · {item.support_count} apoyo</span></div>
+                <div className="courier-breakdown-earnings"><span>Ganancia liberada</span><strong className="courier-breakdown-amount">{formatMoney(item.total_earnings)}</strong></div>
+              </div>
+              {visibleDeliveries.length > 0 && <div className="courier-delivery-details">
+                {visibleDeliveries.map((delivery) => {
+                  const signed = ['signed', 'acknowledged'].includes(delivery.equivalent_status);
+                  const deliveryCode = formatDeliveryPublicCode(delivery.public_code) || delivery.delivery_id?.slice(0, 8) || 'Domicilio';
+                  return <div className="courier-delivery-detail" key={delivery.delivery_id}>
+                    <div className="courier-delivery-copy">
+                      <strong>{deliveryCode}</strong>
+                      <span>{delivery.service_type || 'Servicio'} · {formatDate(delivery.delivered_at)}</span>
+                    </div>
+                    <div className="courier-delivery-state">
+                      <span className={signed ? 'equivalent-signature-status signed' : 'equivalent-signature-status'}>{signed ? 'Equivalente firmado' : 'Pendiente de firma'}</span>
+                      <strong>{signed ? formatMoney(delivery.released_earnings) : 'Ganancia pendiente'}</strong>
+                    </div>
+                    {signed && delivery.equivalent_id && onOpenEquivalent && <button type="button" className="courier-equivalent-link" onClick={() => onOpenEquivalent(delivery.delivery_id)}>Ver equivalente</button>}
+                  </div>;
+                })}
+              </div>}
+            </div>;
+          })}</div>}
+    {!loading && !error && compact && totalDeliveryRows > visibleDeliveryRows && <button type="button" className="courier-report-more" onClick={onViewDetails}>Ver todos los domicilios ({totalDeliveryRows})</button>}
   </section>;
 }
 
-function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliveryId, onOpenChat, selectedEquivalentDeliveryId, onOpenEquivalent, couriers, onAssign, onApproveDelivery, onRejectDelivery, courierBreakdown, courierBreakdownError, viewMode = 'history' }) {
+function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliveryId, onOpenChat, selectedEquivalentDeliveryId, onOpenEquivalent, couriers, onLoadCouriers, onAssign, onApproveDelivery, onRejectDelivery, courierBreakdown, courierBreakdownError, courierDeliveryDetails, courierBreakdownLoading, viewMode = 'history' }) {
   const isReception = viewMode === 'reception';
   const [filter, setFilter] = useState(isReception ? 'delivered' : 'all');
   const filtered = useMemo(() => {
@@ -2239,7 +2366,11 @@ function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliv
     return filter === 'all' ? deliveries : deliveries.filter((delivery) => delivery.status === filter);
   }, [deliveries, filter, isReception]);
   const selectedDelivery = deliveries.find((delivery) => delivery.id === selectedChatDeliveryId) ?? null;
-  const selectedEquivalentDelivery = deliveries.find((delivery) => delivery.id === selectedEquivalentDeliveryId) ?? null;
+  const selectedEquivalentDelivery = deliveries.find((delivery) => delivery.id === selectedEquivalentDeliveryId)
+    ?? (() => {
+      const reportDelivery = courierDeliveryDetails.find((delivery) => delivery.delivery_id === selectedEquivalentDeliveryId);
+      return reportDelivery ? { ...reportDelivery, id: reportDelivery.delivery_id } : null;
+    })();
   const hasTools = Boolean(selectedDelivery || selectedEquivalentDelivery);
   return (
     <section className="history-page">
@@ -2269,7 +2400,10 @@ function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliv
       </div>
       <CourierBreakdownCard
         breakdown={courierBreakdown}
+        deliveries={courierDeliveryDetails}
         error={courierBreakdownError}
+        loading={courierBreakdownLoading}
+        onOpenEquivalent={onOpenEquivalent}
       />
       <div className={hasTools ? 'history-workspace has-tools' : 'history-workspace'}>
         <div className="history-list">
@@ -2278,6 +2412,7 @@ function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliv
               key={delivery.id}
               delivery={delivery}
               couriers={couriers}
+              onLoadCouriers={onLoadCouriers}
               onAssign={onAssign}
               onApproveDelivery={onApproveDelivery}
               onRejectDelivery={onRejectDelivery}
@@ -2320,7 +2455,7 @@ function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliv
 
 function equivalentInvoiceNumber(equivalent, delivery) {
   const code = equivalent?.metadata?.public_code || delivery.public_code || equivalent?.delivery_id || equivalent?.id || '';
-  return String(code).replace(/^FN-/, 'JR-').toUpperCase();
+  return formatDeliveryPublicCode(code);
 }
 
 function equivalentConcept(equivalent) {
@@ -2495,7 +2630,7 @@ function DeliveryEquivalentPanel({ delivery, session, profile, onClose }) {
   const statusText = equivalent?.status === 'acknowledged' ? 'Recibido por farmacia' : equivalent?.status === 'signed' ? 'Firmado por el domiciliario' : 'Pendiente de firma';
 
   const paymentRegistered = equivalent?.payment_status === 'paid';
-  return <aside className="delivery-equivalent-panel" aria-label="Equivalente digital"><div className="equivalent-panel-header"><div><span className="section-kicker">Soporte registrado</span><h3>Equivalente {delivery.public_code || delivery.id?.slice(0, 8)}</h3><p>{delivery.client_name || 'Operación interna'} · {statusText}</p></div><button type="button" className="chat-close-button" onClick={onClose} aria-label="Cerrar equivalente">×</button></div><div className="equivalent-panel-body">{loading ? <p className="equivalent-empty">Cargando equivalente real…</p> : equivalentError ? <p className="equivalent-error" role="alert">{equivalentError}</p> : equivalent ? <><EquivalentReceipt equivalent={equivalent} delivery={delivery} statusText={statusText} receiptRef={receiptRef} />{equivalent.status !== 'acknowledged' && <button type="button" className="primary-button full-width" onClick={acknowledge} disabled={acknowledging}>{acknowledging ? 'Guardando recepción…' : 'Confirmar recepción en farmacia'}</button>}<div className={paymentRegistered ? 'equivalent-payment-state paid' : 'equivalent-payment-state'} role="status">{paymentRegistered ? <><strong>Pago registrado</strong><span>{formatMoney(equivalent.paid_amount ?? equivalent.amount)} · {equivalent.paid_at ? formatDate(equivalent.paid_at) : 'fecha pendiente'}</span></> : <><strong>Pago pendiente</strong><span>Registra el pago cuando la farmacia haya liquidado este soporte.</span><button type="button" className="secondary-button full-width" onClick={markPaid} disabled={markingPaid}>{markingPaid ? 'Registrando pago…' : 'Registrar pago'}</button></>}</div><div className="equivalent-download-actions"><button type="button" className="secondary-button" onClick={downloadPdf} disabled={downloadingPdf}>{downloadingPdf ? 'Preparando PDF…' : 'Descargar PDF'}</button><button type="button" className="secondary-button" onClick={downloadImage} disabled={downloadingImage}>{downloadingImage ? 'Preparando imagen…' : 'Descargar imagen'}</button></div><p className="equivalent-help">El mismo soporte queda disponible para la farmacia y el domiciliario.</p></> : null}</div></aside>;
+  return <aside className="delivery-equivalent-panel" aria-label="Equivalente digital"><div className="equivalent-panel-header"><div><span className="section-kicker">Soporte registrado</span><h3>Equivalente {formatDeliveryPublicCode(delivery.public_code) || delivery.id?.slice(0, 8)}</h3><p>{delivery.client_name || 'Operación interna'} · {statusText}</p></div><button type="button" className="chat-close-button" onClick={onClose} aria-label="Cerrar equivalente">×</button></div><div className="equivalent-panel-body">{loading ? <p className="equivalent-empty">Cargando equivalente real…</p> : equivalentError ? <p className="equivalent-error" role="alert">{equivalentError}</p> : equivalent ? <><EquivalentReceipt equivalent={equivalent} delivery={delivery} statusText={statusText} receiptRef={receiptRef} />{equivalent.status !== 'acknowledged' && <button type="button" className="primary-button full-width" onClick={acknowledge} disabled={acknowledging}>{acknowledging ? 'Guardando recepción…' : 'Confirmar recepción en farmacia'}</button>}<div className={paymentRegistered ? 'equivalent-payment-state paid' : 'equivalent-payment-state'} role="status">{paymentRegistered ? <><strong>Pago registrado</strong><span>{formatMoney(equivalent.paid_amount ?? equivalent.amount)} · {equivalent.paid_at ? formatDate(equivalent.paid_at) : 'fecha pendiente'}</span></> : <><strong>Pago pendiente</strong><span>Registra el pago cuando la farmacia haya liquidado este soporte.</span><button type="button" className="secondary-button full-width" onClick={markPaid} disabled={markingPaid}>{markingPaid ? 'Registrando pago…' : 'Registrar pago'}</button></>}</div><div className="equivalent-download-actions"><button type="button" className="secondary-button" onClick={downloadPdf} disabled={downloadingPdf}>{downloadingPdf ? 'Preparando PDF…' : 'Descargar PDF'}</button><button type="button" className="secondary-button" onClick={downloadImage} disabled={downloadingImage}>{downloadingImage ? 'Preparando imagen…' : 'Descargar imagen'}</button></div><p className="equivalent-help">El mismo soporte queda disponible para la farmacia y el domiciliario.</p></> : null}</div></aside>;
 }
 
 function DeliveryChatPanel({ delivery, session, profile, onClose }) {
@@ -2579,7 +2714,7 @@ function DeliveryChatPanel({ delivery, session, profile, onClose }) {
     setSending(false);
   };
 
-  return <aside className="delivery-chat-panel" aria-label="Chat del domicilio"><div className="chat-panel-header"><div><span className="section-kicker">Conversación registrada</span><h3>Chat {delivery.public_code || delivery.id?.slice(0, 8)}</h3><p>{delivery.client_name || 'Operación interna'} · {delivery.status ? (DELIVERY_STATUS[delivery.status]?.[0] || delivery.status) : 'Sin estado'}</p></div><button type="button" className="chat-close-button" onClick={onClose} aria-label="Cerrar chat">×</button></div><div className="chat-participant"><span className="chat-participant-dot" /><span>Farmacia y domiciliario · el administrador también puede consultar esta conversación</span></div><div className="chat-messages" aria-live="polite">{loading ? <p className="chat-empty">Cargando mensajes reales…</p> : messages.length === 0 ? <p className="chat-empty">Todavía no hay mensajes. Escribe para coordinar este domicilio.</p> : messages.map((message) => <div key={message.id} className={message.sender_id === session?.user?.id ? 'chat-message own' : 'chat-message'}><div className="chat-message-meta"><strong>{message.sender_name || (message.sender_role === 'pharmacy' ? 'Farmacia' : 'Domiciliario')}</strong><time>{formatDate(message.created_at)}</time></div><p>{message.body}</p></div>)}</div>{chatError && <p className="chat-error" role="alert">{chatError}</p>}<form className="chat-composer" onSubmit={sendMessage}><label className="sr-only" htmlFor="pharmacy-chat-message">Mensaje</label><input ref={composerRef} id="pharmacy-chat-message" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={`Escribe como ${profile?.full_name || 'farmacia'}`} maxLength="2000" disabled={sending} /><button type="submit" className="primary-button" disabled={sending || !draft.trim()}>{sending ? '…' : 'Enviar'}</button></form></aside>;
+  return <aside className="delivery-chat-panel" aria-label="Chat del domicilio"><div className="chat-panel-header"><div><span className="section-kicker">Conversación registrada</span><h3>Chat {formatDeliveryPublicCode(delivery.public_code) || delivery.id?.slice(0, 8)}</h3><p>{delivery.client_name || 'Operación interna'} · {delivery.status ? (DELIVERY_STATUS[delivery.status]?.[0] || delivery.status) : 'Sin estado'}</p></div><button type="button" className="chat-close-button" onClick={onClose} aria-label="Cerrar chat">×</button></div><div className="chat-participant"><span className="chat-participant-dot" /><span>Farmacia y domiciliario · el administrador también puede consultar esta conversación</span></div><div className="chat-messages" aria-live="polite">{loading ? <p className="chat-empty">Cargando mensajes reales…</p> : messages.length === 0 ? <p className="chat-empty">Todavía no hay mensajes. Escribe para coordinar este domicilio.</p> : messages.map((message) => <div key={message.id} className={message.sender_id === session?.user?.id ? 'chat-message own' : 'chat-message'}><div className="chat-message-meta"><strong>{message.sender_name || (message.sender_role === 'pharmacy' ? 'Farmacia' : 'Domiciliario')}</strong><time>{formatDate(message.created_at)}</time></div><p>{message.body}</p></div>)}</div>{chatError && <p className="chat-error" role="alert">{chatError}</p>}<form className="chat-composer" onSubmit={sendMessage}><label className="sr-only" htmlFor="pharmacy-chat-message">Mensaje</label><input ref={composerRef} id="pharmacy-chat-message" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={`Escribe como ${profile?.full_name || 'farmacia'}`} maxLength="2000" disabled={sending} /><button type="submit" className="primary-button" disabled={sending || !draft.trim()}>{sending ? '…' : 'Enviar'}</button></form></aside>;
 }
 
 function ConfigScreen() {

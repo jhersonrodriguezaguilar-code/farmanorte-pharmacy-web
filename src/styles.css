@@ -2346,6 +2346,23 @@ input:focus, textarea:focus, select:focus { border-color: var(--brand-blue); box
 .courier-breakdown-main strong { color: #173b5e; }
 .courier-breakdown-main span, .courier-breakdown-empty { color: #6a8199; }
 .courier-breakdown-amount { color: #087a63; font-variant-numeric: tabular-nums; }
+.courier-breakdown-group { min-width: 0; }
+.courier-breakdown-earnings { flex: 0 0 auto; text-align: right; }
+.courier-breakdown-earnings > span { display: block; margin-bottom: 3px; color: #6a8199; font-size: 9px; }
+.courier-delivery-details { display: grid; gap: 7px; padding: 0 0 10px 42px; }
+.courier-delivery-detail { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px 10px; padding: 8px 10px; border: 1px solid #e1eaf3; border-radius: 10px; background: #f8fbfe; }
+.courier-delivery-copy { min-width: 0; }
+.courier-delivery-copy strong, .courier-delivery-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.courier-delivery-copy strong { color: #173b5e; font-size: 10px; font-variant-numeric: tabular-nums; }
+.courier-delivery-copy span { margin-top: 3px; color: #6a8199; font-size: 9px; }
+.courier-delivery-state { grid-column: 2; grid-row: 1 / span 2; text-align: right; }
+.courier-delivery-state > span, .courier-delivery-state > strong { display: block; }
+.courier-delivery-state > span { color: #8a6412; font-size: 8px; font-weight: 750; }
+.courier-delivery-state > span.signed { color: #087a63; }
+.courier-delivery-state > strong { margin-top: 3px; color: #173b5e; font-size: 9px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.courier-equivalent-link { grid-column: 1 / -1; justify-self: start; padding: 3px 0 0; border: 0; background: transparent; color: var(--brand-blue); font-size: 9px; font-weight: 800; text-align: left; cursor: pointer; }
+.courier-equivalent-link:hover { text-decoration: underline; }
+.courier-report-more { justify-self: start; margin-top: 6px; padding: 5px 0; border: 0; background: transparent; color: var(--brand-blue); font-size: 10px; font-weight: 800; cursor: pointer; }
 
 /* Pedidos: lista escaneable y filtros visibles */
 .history-page { padding: 26px; }
@@ -2458,7 +2475,6 @@ input:focus, textarea:focus, select:focus { border-color: var(--brand-blue); box
 @media (prefers-reduced-motion: reduce) {
   .nav-item:hover, .delivery-row:hover { transform: none; }
 }
-
 
 /*
  * Turnos y ajustes · segunda pasada de composición
@@ -2736,4 +2752,13 @@ input:focus, textarea:focus, select:focus { border-color: var(--brand-blue); box
   }
   .settings-info-list .push-settings-card { margin: 10px; padding: 16px; }
   .settings-signout { margin: 20px 18px 22px; }
+}
+
+@media (max-width: 540px) {
+  .courier-breakdown-earnings > span { max-width: 78px; white-space: normal; }
+  .courier-delivery-details { padding-left: 0; }
+  .courier-delivery-detail { grid-template-columns: minmax(0, 1fr); }
+  .courier-delivery-state { grid-column: 1; grid-row: auto; text-align: left; }
+  .courier-delivery-state > span, .courier-delivery-state > strong { display: inline; }
+  .courier-delivery-state > strong { margin: 0 0 0 6px; }
 }

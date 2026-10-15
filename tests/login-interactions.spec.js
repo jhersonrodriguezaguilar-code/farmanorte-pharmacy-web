@@ -7,35 +7,34 @@ async function requireRealLogin(page) {
 }
 
 test.describe('real pharmacy login interactions', () => {
-  test('toggles password visibility without losing the value', async ({ page }) => {
+  test('conserva el login dividido anterior de la farmacia', async ({ page }) => {
     await requireRealLogin(page);
 
-    const password = page.locator('#login-password');
-    await password.fill('temporary-password');
-    await page.getByRole('button', { name: 'Mostrar contraseña' }).click();
-    await expect(password).toHaveAttribute('type', 'text');
-    await expect(password).toHaveValue('temporary-password');
-    await page.getByRole('button', { name: 'Ocultar contraseña' }).click();
-    await expect(password).toHaveAttribute('type', 'password');
-    await expect(password).toHaveValue('temporary-password');
+    await expect(page.locator('.auth-page')).toBeVisible();
+    await expect(page.locator('.auth-aside')).toBeVisible();
+    await expect(page.locator('.auth-main')).toBeVisible();
+    await expect(page.locator('.pharmacy-login-page')).toHaveCount(0);
+    await expect(page.locator('.login-delivery-scene')).toHaveCount(0);
+    await expect(page.locator('.hero-route')).toHaveCount(0);
+    await expect(page.locator('.hero-copy-animated')).toBeVisible();
   });
 
-  test('focuses the username field when password recovery starts empty', async ({ page }) => {
+  test('mantiene los campos simples del login anterior', async ({ page }) => {
     await requireRealLogin(page);
 
-    await page.getByRole('button', { name: '¿Olvidaste tu contraseña?' }).click();
-    await expect(page.getByRole('alert')).toContainText('Escribe tu usuario o correo');
-    await expect(page.getByLabel('Usuario o correo')).toBeFocused();
+    await expect(page.getByLabel('Usuario o correo')).toHaveAttribute('placeholder', 'juan.perez');
+    await expect(page.getByLabel('Contraseña')).toHaveAttribute('type', 'password');
+    await expect(page.getByRole('button', { name: 'Entrar al panel' })).toBeVisible();
   });
 
   test('returns a generic error for invalid credentials through Supabase Auth', async ({ page }) => {
     await requireRealLogin(page);
 
     await page.getByLabel('Usuario o correo').fill('login-test-user@example.invalid');
-    await page.locator('#login-password').fill('not-a-real-password');
+    await page.getByLabel('Contraseña').fill('not-a-real-password');
     await page.getByRole('button', { name: 'Entrar al panel' }).click();
 
-    await expect(page.getByRole('alert')).toContainText('No se pudo iniciar sesión');
+    await expect(page.getByRole('alert')).toContainText('Correo o contraseña incorrectos');
     await expect(page.getByRole('button', { name: 'Entrar al panel' })).toBeEnabled();
   });
 
@@ -44,6 +43,7 @@ test.describe('real pharmacy login interactions', () => {
     const page = await context.newPage();
     await requireRealLogin(page);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    expect(await page.locator('.auth-form-wrap').boundingBox()).not.toBeNull();
     await context.close();
   });
 

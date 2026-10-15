@@ -26,6 +26,21 @@ públicas indicadas abajo.
 La clave `publishable`/`anon` es la única que debe llegar al navegador. Nunca se debe poner una clave `service_role` en esta página.
 
 La página incluye manifiesto PWA y service worker para permitir añadirla a la
-pantalla de inicio en iPhone. El service worker solo cachea la interfaz local;
-las lecturas, escrituras, autenticación y tiempo real siguen dependiendo de
-Supabase.
+pantalla de inicio en iPhone. El service worker se registra explícitamente al
+cargar la versión publicada, funciona también si la página está dentro de una
+ruta como `/courier/`, cachea la interfaz y abre el pedido o el chat al tocar
+una notificación. En `Ajustes` el usuario activa las alertas de este
+dispositivo después de conceder el permiso; no se pide permiso de forma
+automática al iniciar sesión. Las lecturas, escrituras, autenticación y tiempo
+real siguen dependiendo de Supabase.
+
+Al publicar un domicilio o enviar un mensaje, la página invoca la función Edge
+`send-push-notification`. Esa función entrega la alerta a los dispositivos de
+domiciliarios elegibles mediante FCM y, para navegadores, Web Push. Para
+habilitarlo en producción hay que definir en Supabase
+`FIREBASE_SERVICE_ACCOUNT_JSON` y los secretos VAPID
+`WEB_PUSH_VAPID_PUBLIC_KEY`, `WEB_PUSH_VAPID_PRIVATE_KEY` y
+`WEB_PUSH_VAPID_SUBJECT`. Si el permiso o los secretos no están disponibles,
+la operación en primer plano no se bloquea. El navegador debe tener permiso de
+notificaciones; en iPhone, la web debe instalarse desde Safari en la pantalla
+de inicio para recibir Web Push de forma fiable en segundo plano.

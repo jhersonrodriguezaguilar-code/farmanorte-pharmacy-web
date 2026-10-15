@@ -10,7 +10,7 @@ test('renders the explicit configuration state without fake data', async ({ page
     await expect(page.getByText('Conecta el panel con Supabase')).toBeVisible();
   } else {
     await expect(page.getByText('Acceso de farmacia')).toBeVisible();
-    await expect(page.getByText('Acceso seguro para personal autorizado')).toBeVisible();
+    await expect(page.getByText('Autenticación protegida por Supabase Auth')).toBeVisible();
   }
   await expect(page.getByText('No hay domicilios')).not.toBeVisible();
   expect(pageErrors, `Page errors: ${pageErrors.join(' | ')}`).toEqual([]);
