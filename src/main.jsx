@@ -1162,16 +1162,9 @@ function App() {
           setWeeklyZoneCouriers([]);
           return;
         }
-        const today = new Date();
-        const monday = new Date(today);
-        monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
-        const weekDates = Array.from({ length: 7 }, (_, index) => {
-          const date = new Date(monday);
-          date.setDate(monday.getDate() + index);
-          return localDateIso(date);
-        });
+        // Solo los turnos del día: se recalcula en cada refresco, así que al
+        // pasar la medianoche desaparecen los del día anterior.
         const currentDate = localDateIso();
-        const currentIndex = weekDates.indexOf(currentDate);
         const todayResponse = await supabase.rpc(
           'get_pharmacy_zone_couriers',
           { requested_zone_id: directZone.id, requested_date: currentDate },
@@ -1184,22 +1177,8 @@ function App() {
           return;
         }
         setZoneCouriers(todayResponse.data ?? []);
-        // La pantalla ya puede dibujarse con la cobertura de hoy. La semana
-        // completa se consulta después para que turnos no vuelva lento el
-        // primer acceso al panel.
-        setWeeklyZoneCouriers(todayResponse.data ?? []);
-        const remainingDates = weekDates.filter((_, index) => index !== currentIndex);
-        void Promise.all(remainingDates.map((date) => supabase.rpc(
-          'get_pharmacy_zone_couriers',
-          { requested_zone_id: directZone.id, requested_date: date },
-        ))).then((remainingResponses) => {
-          if (!isCurrent()) return;
-          const firstError = remainingResponses.find((response) => response.error)?.error;
-          if (firstError) return;
-          const weeklyRows = [todayResponse, ...remainingResponses]
-            .flatMap((response) => response.data ?? []);
-          setWeeklyZoneCouriers(weeklyRows);
-        });
+        setWeeklyZoneCouriers((todayResponse.data ?? [])
+          .filter((row) => String(row.scheduled_for || currentDate).slice(0, 10) === currentDate));
       };
 
       // Estas consultas no dependen entre sí. Ejecutarlas en paralelo evita que
@@ -2213,10 +2192,10 @@ function WeeklyCourierSchedule({ rows }) {
   return <section className="info-card weekly-couriers-card">
     <div className="info-card-header">
       <span className="section-kicker">Turnos publicados</span>
-      <span className="live-pill">Lunes a domingo</span>
+      <span className="live-pill">Hoy</span>
     </div>
-    <h3>Quién cubre esta zona</h3>
-    {groups.length === 0 ? <p className="empty-zone-couriers">No hay turnos publicados para esta semana.</p> : <div className="weekly-courier-groups">
+    <h3>Quién cubre esta zona hoy</h3>
+    {groups.length === 0 ? <p className="empty-zone-couriers">No hay turnos publicados para hoy.</p> : <div className="weekly-courier-groups">
       {groups.map(([date, couriers]) => <div className="weekly-courier-day" key={date}>
         <div className="weekly-courier-day-heading">
           <strong>{new Intl.DateTimeFormat('es-CO', { weekday: 'long', day: '2-digit', month: 'short' }).format(new Date(`${date}T12:00:00`))}</strong>
@@ -2242,7 +2221,7 @@ function PharmacyScheduleView({ pharmacy, rows, breakdown, breakdownError, couri
         </div>
         <div className="zone-chip"><span /> {pharmacy.zone_name || 'Zona pendiente'}</div>
       </div>
-      <p className="page-intro">Consulta quién estará disponible de lunes a domingo. Los apoyos generales aparecen aquí porque pueden atender cualquier farmacia.</p>
+      <p className="page-intro">Consulta quién está disponible hoy. Al cambiar el día se muestran solo los turnos nuevos. Los apoyos generales aparecen aquí porque pueden atender cualquier farmacia.</p>
       <WeeklyCourierSchedule rows={rows} />
     </section>
     <aside className="side-column">
