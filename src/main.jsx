@@ -1470,6 +1470,14 @@ function App() {
     }
   };
 
+  const removeMissingDelivery = (deliveryId) => {
+    if (!deliveryId) return;
+    setDeliveries((current) => current.filter((item) => item.id !== deliveryId));
+    setChatDeliveryId((current) => current === deliveryId ? null : current);
+    setEquivalentDeliveryId((current) => current === deliveryId ? null : current);
+    setNotice('Ese domicilio ya no existe. La lista se actualizó.');
+  };
+
   const assignDelivery = async (deliveryId, courierId) => {
     if (!supabase || !deliveryId || !courierId) return false;
     setError('');
@@ -1479,7 +1487,12 @@ function App() {
       requested_courier_id: courierId,
     });
     if (assignmentError) {
-      setError(getErrorMessage(assignmentError));
+      const message = getErrorMessage(assignmentError);
+      if (/el domicilio no existe|delivery.*not found/i.test(message)) {
+        removeMissingDelivery(deliveryId);
+      } else {
+        setError(message);
+      }
       return false;
     }
     triggerPushNotification({ event: 'delivery_assigned', delivery_id: deliveryId });
@@ -1495,7 +1508,14 @@ function App() {
       'get_pharmacy_delivery_couriers',
       { requested_delivery_id: deliveryId, requested_date: localDateIso() },
     );
-    if (couriersError) throw new Error(getErrorMessage(couriersError));
+    if (couriersError) {
+      const message = getErrorMessage(couriersError);
+      if (/el domicilio no existe|delivery.*not found/i.test(message)) {
+        removeMissingDelivery(deliveryId);
+        return null;
+      }
+      throw new Error(message);
+    }
     return Array.isArray(data) ? data : [];
   };
 
@@ -2077,7 +2097,7 @@ function App() {
                 onOpenEquivalent={openReportedEquivalent}
                 onViewDetails={openReportDetails}
               />
-              <div className="info-card"><div className="info-card-header"><span className="section-kicker">Actividad reciente</span><button type="button" onClick={() => setActiveView('history')}>Ver todo →</button></div>{deliveries.slice(0, 3).map((delivery) => <DeliveryRow key={delivery.id} delivery={delivery} couriers={assignedCouriers} onLoadCouriers={loadDeliveryCouriers} onAssign={assignDelivery} onApproveDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, true)} onRejectDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, false)} onOpenChat={(deliveryId) => { selectChatDelivery(deliveryId); setActiveView('history'); }} onOpenEquivalent={(deliveryId) => { selectEquivalentDelivery(deliveryId); setActiveView('history'); }} />)}{deliveries.length === 0 && <EmptyActivity />}</div>
+              <div className="info-card"><div className="info-card-header"><span className="section-kicker">Actividad reciente</span><button type="button" onClick={() => setActiveView('history')}>Ver todo →</button></div>{deliveries.slice(0, 3).map((delivery) => <DeliveryRow key={delivery.id} delivery={delivery} couriers={assignedCouriers} onLoadCouriers={loadDeliveryCouriers} onAssign={assignDelivery} onDeliveryMissing={removeMissingDelivery} onApproveDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, true)} onRejectDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, false)} onOpenChat={(deliveryId) => { selectChatDelivery(deliveryId); setActiveView('history'); }} onOpenEquivalent={(deliveryId) => { selectEquivalentDelivery(deliveryId); setActiveView('history'); }} />)}{deliveries.length === 0 && <EmptyActivity />}</div>
               <div className="process-card"><span className="section-kicker">Flujo registrado</span><div className="process-step"><span>1</span><div><strong>Publicas</strong><small>Primero la zona, luego el apoyo</small></div></div><div className="process-line" /><div className="process-step"><span>2</span><div><strong>Se acepta</strong><small>El domiciliario recibe el aviso</small></div></div><div className="process-line" /><div className="process-step"><span>3</span><div><strong>Se entrega</strong><small>El pedido queda registrado</small></div></div></div>
             </aside>
           </div>
@@ -2116,6 +2136,7 @@ function App() {
             couriers={assignedCouriers}
             onLoadCouriers={loadDeliveryCouriers}
             onAssign={assignDelivery}
+            onDeliveryMissing={removeMissingDelivery}
             onApproveDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, true)}
             onRejectDelivery={(deliveryId) => respondToDeliveryApproval(deliveryId, false)}
             courierBreakdown={courierBreakdown}
@@ -2233,7 +2254,7 @@ const CANCEL_REASONS = [
   'Otro motivo',
 ];
 
-function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], onLoadCouriers, onAssign, onApproveDelivery, onRejectDelivery }) {
+function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], onLoadCouriers, onAssign, onDeliveryMissing, onApproveDelivery, onRejectDelivery }) {
   const [assignmentOpen, setAssignmentOpen] = useState(false);
   const [assignmentCouriers, setAssignmentCouriers] = useState(couriers);
   const [loadingAssignmentCouriers, setLoadingAssignmentCouriers] = useState(false);
@@ -2287,9 +2308,19 @@ function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], on
     }
     setLoadingAssignmentCouriers(true);
     try {
-      setAssignmentCouriers(await onLoadCouriers(delivery.id));
+      const loadedCouriers = await onLoadCouriers(delivery.id);
+      if (loadedCouriers === null) {
+        setAssignmentOpen(false);
+        return;
+      }
+      setAssignmentCouriers(loadedCouriers);
       setAssignmentOpen(true);
     } catch (error) {
+      if (/el domicilio no existe|delivery.*not found/i.test(error?.message || '')) {
+        onDeliveryMissing?.(delivery.id);
+        setAssignmentOpen(false);
+        return;
+      }
       setAssignmentCouriers([]);
       setAssignmentLoadError(error?.message || 'No se pudo consultar la cobertura del recorrido.');
       setAssignmentOpen(true);
@@ -2576,7 +2607,7 @@ function CourierBreakdownCard({ breakdown, deliveries = [], error, loading = fal
   </section>;
 }
 
-function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliveryId, onOpenChat, selectedEquivalentDeliveryId, onOpenEquivalent, couriers, onLoadCouriers, onAssign, onApproveDelivery, onRejectDelivery, courierBreakdown, courierBreakdownError, courierDeliveryDetails, courierBreakdownLoading, viewMode = 'history' }) {
+function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliveryId, onOpenChat, selectedEquivalentDeliveryId, onOpenEquivalent, couriers, onLoadCouriers, onAssign, onDeliveryMissing, onApproveDelivery, onRejectDelivery, courierBreakdown, courierBreakdownError, courierDeliveryDetails, courierBreakdownLoading, viewMode = 'history' }) {
   const isReception = viewMode === 'reception';
   const [filter, setFilter] = useState(isReception ? 'delivered' : 'all');
   const filtered = useMemo(() => {
@@ -2632,6 +2663,7 @@ function HistoryView({ deliveries, pharmacy, session, profile, selectedChatDeliv
               couriers={couriers}
               onLoadCouriers={onLoadCouriers}
               onAssign={onAssign}
+              onDeliveryMissing={onDeliveryMissing}
               onApproveDelivery={onApproveDelivery}
               onRejectDelivery={onRejectDelivery}
               onOpenChat={onOpenChat}
