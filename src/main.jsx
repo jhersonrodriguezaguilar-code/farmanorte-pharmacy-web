@@ -5,6 +5,7 @@ import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import './styles.css';
 import { PURCHASE_CATALOG } from './purchaseCatalog';
+import AdminPanel from './AdminPanel';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -1117,6 +1118,11 @@ function App() {
       void registerWebPushSubscription(userId).then((pushState) => {
         if (isCurrent()) setWebPushState(pushState);
       });
+      if (profileData.role === 'admin') {
+        // El administrador usa el panel de administración; no necesita farmacia.
+        setLoading(false);
+        return;
+      }
       if (profileData.role !== 'pharmacy') {
         setError(`Esta página es para usuarios de farmacia. Tu rol actual es ${profileData.role}.`);
         setLoading(false);
@@ -2026,6 +2032,9 @@ function App() {
   if (recoveryMode && session) return <PasswordRecoveryScreen onComplete={() => { setRecoveryMode(false); window.history.replaceState({}, '', window.location.pathname); }} />;
   if (!session) return <LoginScreen />;
   if (profile?.must_change_password) return <MandatoryPasswordScreen profile={profile} />;
+  if (profile?.role === 'admin' && profile.active && !loading) {
+    return <AdminPanel client={supabase} profile={profile} onSignOut={signOut} Logo={BrandLogo} Background={LiveBackground} />;
+  }
   if (error && (!profile || profile.role !== 'pharmacy' || !pharmacy)) {
     return <AccessProblem error={error} onSignOut={signOut} />;
   }
