@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import './styles.css';
+import { PURCHASE_CATALOG } from './purchaseCatalog';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -180,11 +181,12 @@ async function deactivateWebPushSubscription(userId) {
 
 const PAYMENT_LABELS = {
   cash: 'Efectivo',
-  card: 'Tarjeta',
-  qr: 'QR',
+  digital: 'Tarjeta o QR',
 };
 
-const SERVICE_TYPES = [
+const MAX_COMBINATION_TASKS = 4;
+
+const BASE_SERVICE_TYPES = [
   {
     value: 'Domicilio normal',
     label: 'Domicilio',
@@ -192,6 +194,8 @@ const SERVICE_TYPES = [
     kind: 'pharmacyToHome',
     requiresClient: true,
     requiresPayment: true,
+    purchaseCount: 0,
+    crossCount: 0,
     placeholder: 'Ej. 2 cajas de acetaminofén y 1 jarabe.',
   },
   {
@@ -200,6 +204,8 @@ const SERVICE_TYPES = [
     description: 'El domiciliario compra un producto fuera de la red.',
     kind: 'externalPurchase',
     requiresPurchase: true,
+    purchaseCount: 1,
+    crossCount: 0,
     placeholder: 'Producto, cantidad, lugar de compra y cómo identificarlo.',
   },
   {
@@ -208,39 +214,40 @@ const SERVICE_TYPES = [
     description: 'Producto que se recoge en otra farmacia de la red.',
     kind: 'pharmacyCross',
     requiresCross: true,
+    purchaseCount: 0,
+    crossCount: 1,
     placeholder: 'Farmacia de origen, farmacia destino, producto y cantidad.',
   },
-  {
-    value: 'Domicilio + compra',
-    label: 'Domicilio + compra',
-    description: 'Entrega al cliente con una compra externa incluida.',
+];
+
+function buildCombinationServiceType(purchaseCount, crossCount) {
+  if (!purchaseCount && !crossCount) return null;
+  const label = buildDynamicServiceLabel(purchaseCount, crossCount);
+  const parts = [];
+  if (purchaseCount) parts.push(`${purchaseCount} ${purchaseCount === 1 ? 'compra' : 'compras'}`);
+  if (crossCount) parts.push(`${crossCount} ${crossCount === 1 ? 'cruce' : 'cruces'}`);
+  return {
+    value: label,
+    label,
+    description: `Entrega a domicilio con ${parts.join(' y ')}.`,
     kind: 'combinedService',
     requiresClient: true,
     requiresPayment: true,
-    requiresPurchase: true,
-    placeholder: 'Productos de farmacia, compra externa, cantidades e instrucciones.',
-  },
-  {
-    value: 'Domicilio + cruce',
-    label: 'Domicilio + cruce',
-    description: 'Entrega al cliente con un cruce entre farmacias.',
-    kind: 'combinedService',
-    requiresClient: true,
-    requiresPayment: true,
-    requiresCross: true,
-    placeholder: 'Farmacia de origen, cruce, productos y datos de entrega.',
-  },
-  {
-    value: 'Domicilio + compra + cruce',
-    label: 'Domicilio + compra + cruce',
-    description: 'Combina entrega, compra externa y cruce.',
-    kind: 'combinedService',
-    requiresClient: true,
-    requiresPayment: true,
-    requiresPurchase: true,
-    requiresCross: true,
-    placeholder: 'Describe la compra, el cruce, los productos y la ruta de entrega.',
-  },
+    requiresPurchase: purchaseCount > 0,
+    requiresCross: crossCount > 0,
+    purchaseCount,
+    crossCount,
+    placeholder: 'Completa cada compra, cruce y dato de entrega.',
+  };
+}
+
+const SERVICE_TYPES = [
+  ...BASE_SERVICE_TYPES,
+  ...Array.from({ length: MAX_COMBINATION_TASKS + 1 }, (_, purchaseCount) => (
+    Array.from({ length: MAX_COMBINATION_TASKS + 1 }, (_, crossCount) => (
+      buildCombinationServiceType(purchaseCount, crossCount)
+    ))
+  )).flat().filter(Boolean),
 ];
 
 const DELIVERY_STATUS = {
@@ -277,6 +284,29 @@ function createCrossStop() {
     quantity: '1',
     notes: '',
   };
+}
+
+function normalizeTaskCount(value) {
+  return Math.max(0, Number.parseInt(value, 10) || 0);
+}
+
+function clampCombinationCount(value) {
+  return Math.min(MAX_COMBINATION_TASKS, normalizeTaskCount(value));
+}
+
+function buildDynamicServiceLabel(purchaseCount = 0, crossCount = 0) {
+  const purchases = normalizeTaskCount(purchaseCount);
+  const crosses = normalizeTaskCount(crossCount);
+  const parts = ['Domicilio'];
+  if (purchases > 0) parts.push(`${purchases} ${purchases === 1 ? 'compra' : 'compras'}`);
+  if (crosses > 0) parts.push(`${crosses} ${crosses === 1 ? 'cruce' : 'cruces'}`);
+  return parts.join(' + ');
+}
+
+function resizeTaskRows(rows, count, createRow) {
+  const nextRows = rows.slice(0, count);
+  while (nextRows.length < count) nextRows.push(createRow());
+  return nextRows;
 }
 
 function createEmptyForm() {
@@ -344,16 +374,46 @@ function formatDeliveryPublicCode(value) {
 }
 
 function getServiceTypeConfig(value) {
-  return SERVICE_TYPES.find((service) => service.value === value) ?? SERVICE_TYPES[0];
+  const base = SERVICE_TYPES.find((service) => service.value === value) ?? SERVICE_TYPES[0];
+  return { ...base, persistedValue: base.value };
+}
+
+function isDomicilioServiceType(value) {
+  return value === 'Domicilio normal'
+    || String(value || '').startsWith('Domicilio +');
+}
+
+function findDomicilioCombination(purchaseCount, crossCount) {
+  const normalizedPurchases = normalizeTaskCount(purchaseCount);
+  const normalizedCrosses = normalizeTaskCount(crossCount);
+  return SERVICE_TYPES.find((service) => service.kind === 'combinedService'
+    && service.purchaseCount === normalizedPurchases
+    && service.crossCount === normalizedCrosses)
+    ?? SERVICE_TYPES[0];
 }
 
 function formatPharmacyOption(pharmacy) {
   return formatPharmacyDisplay(pharmacy);
 }
 
+function findPurchaseBranch(merchantName, branchName) {
+  const merchant = PURCHASE_CATALOG.find((item) => item.name === merchantName);
+  return merchant?.branches.find((item) => item.name === branchName) ?? null;
+}
+
+function formatPurchaseBranch(item) {
+  const branch = findPurchaseBranch(item.merchant, item.branch);
+  return branch ? `${branch.name} — ${branch.address}` : item.branch.trim();
+}
+
+function formatPurchaseNotes(item) {
+  const branch = findPurchaseBranch(item.merchant, item.branch);
+  return [branch?.details, item.notes.trim()].filter(Boolean).join(' · ') || null;
+}
+
 function buildProductSummary(form) {
   const purchaseSummary = form.purchaseItems
-    .map((item) => `${item.merchant} ${item.branch}: ${item.product} x${item.quantity}`)
+    .map((item) => `${item.merchant} ${formatPurchaseBranch(item)}: ${item.product} x${item.quantity}`)
     .join(' | ');
   const crossSummary = form.crossStops
     .map((stop) => `${stop.originPharmacyCode} → ${stop.destinationPharmacyCode}: ${stop.product} x${stop.quantity}`)
@@ -369,10 +429,10 @@ function buildDeliveryTasks(form) {
     sequence_no: index + 1,
     task_type: 'purchase',
     merchant_name: item.merchant.trim(),
-    merchant_branch: item.branch.trim(),
+    merchant_branch: formatPurchaseBranch(item),
     product: item.product.trim(),
     quantity: Number(item.quantity),
-    notes: item.notes.trim() || null,
+    notes: formatPurchaseNotes(item),
     return_to_pharmacy: false,
   }));
   const crossTasks = form.crossStops.map((stop, index) => ({
@@ -411,21 +471,23 @@ function getErrorMessage(error) {
 let notificationAudioContext;
 let notificationAudio;
 
-function playNotificationTone(kind = 'message') {
+async function playNotificationTone(kind = 'message') {
   try {
     notificationAudio ||= new Audio(`${import.meta.env.BASE_URL}fast-ping-notification.mp3`);
+    notificationAudio.preload = 'auto';
+    notificationAudio.volume = 0.9;
     notificationAudio.currentTime = 0;
-    void notificationAudio.play().catch(() => {});
-    return;
+    await notificationAudio.play();
+    return true;
   } catch (_) {
     // Si el navegador bloquea el MP3, se intenta con el tono breve de respaldo.
   }
   try {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContext) return;
+    if (!AudioContext) return false;
     notificationAudioContext ||= new AudioContext();
     const context = notificationAudioContext;
-    if (context.state === 'suspended') void context.resume().catch(() => {});
+    if (context.state === 'suspended') await context.resume();
     const now = context.currentTime;
     const oscillator = context.createOscillator();
     const gain = context.createGain();
@@ -439,8 +501,10 @@ function playNotificationTone(kind = 'message') {
     gain.connect(context.destination);
     oscillator.start(now);
     oscillator.stop(now + 0.32);
+    return true;
   } catch (_) {
     // El navegador puede bloquear audio hasta que exista una interacción.
+    return false;
   }
 }
 
@@ -892,12 +956,15 @@ function PharmacyProfileChooser({ pharmacy, profiles, onSelect, onSignOut }) {
 }
 
 function PurchaseTaskRow({ item, index, canRemove, onChange, onRemove }) {
+  const catalogMerchant = PURCHASE_CATALOG.find((merchant) => merchant.name === item.merchant);
+  const catalogBranches = catalogMerchant?.branches ?? [];
+  const selectedBranch = catalogBranches.find((branch) => branch.name === item.branch);
   return (
     <fieldset className="task-row">
       <legend>Compra {index + 1}</legend>
       <div className="task-row-grid purchase-task-grid">
-        <label className="field"><span>Lugar o comercio <em>*</em></span><input value={item.merchant} onChange={(event) => onChange('merchant', event.target.value)} placeholder="Ej. Cruz Verde" /></label>
-        <label className="field"><span>Sede o barrio <em>*</em></span><input value={item.branch} onChange={(event) => onChange('branch', event.target.value)} placeholder="Ej. Pradera" /></label>
+        <label className="field"><span>Farmacia o cadena <em>*</em></span><select value={item.merchant} onChange={(event) => onChange('merchant', event.target.value)}><option value="">Selecciona una cadena</option>{PURCHASE_CATALOG.map((merchant) => <option key={merchant.name} value={merchant.name}>{merchant.name}</option>)}</select></label>
+        <label className="field"><span>Sede <em>*</em></span><select value={item.branch} onChange={(event) => onChange('branch', event.target.value)} disabled={!catalogMerchant}><option value="">{catalogMerchant ? 'Selecciona una sede' : 'Primero elige la cadena'}</option>{catalogBranches.map((branch) => <option key={`${item.id}-${branch.name}`} value={branch.name}>{`${branch.name} — ${branch.address}`}</option>)}</select>{selectedBranch && <small className="purchase-branch-detail">{selectedBranch.address}{selectedBranch.details ? ` · ${selectedBranch.details}` : ''}</small>}</label>
         <label className="field"><span>Producto <em>*</em></span><input value={item.product} onChange={(event) => onChange('product', event.target.value)} placeholder="Nombre del producto" /></label>
         <label className="field quantity-field"><span>Cantidad <em>*</em></span><input type="number" min="1" step="1" value={item.quantity} onChange={(event) => onChange('quantity', event.target.value)} inputMode="numeric" /></label>
         <label className="field task-row-wide"><span>Instrucción de compra</span><input value={item.notes} onChange={(event) => onChange('notes', event.target.value)} placeholder="Referencia, presentación o detalle para identificarlo" /></label>
@@ -955,6 +1022,8 @@ function App() {
   const [chatDeliveryId, setChatDeliveryId] = useState(null);
   const [equivalentDeliveryId, setEquivalentDeliveryId] = useState(null);
   const [form, setForm] = useState(emptyForm);
+  const [purchaseFilter, setPurchaseFilter] = useState('');
+  const [crossFilter, setCrossFilter] = useState('');
   const [publishing, setPublishing] = useState(false);
   const [webPushState, setWebPushState] = useState(getInitialWebPushState);
 
@@ -1245,6 +1314,7 @@ function App() {
       // Estado previo de cada domicilio, para avisar cuando un domiciliario
       // libera uno que tenía (vuelve de "aceptado" a "publicado").
       const knownStatuses = new Map((deliveryData ?? []).map((item) => [item.id, item.status]));
+      const knownPriorityUntil = new Map((deliveryData ?? []).map((item) => [item.id, item.priority_until]));
 
       if (channel) {
         await supabase.removeChannel(channel);
@@ -1271,12 +1341,19 @@ function App() {
             if (payload.eventType === 'DELETE') knownDeliveryIds.delete(payload.old.id);
             if (payload.eventType === 'UPDATE') {
               const previousStatus = knownStatuses.get(payload.new.id);
+              const previousPriorityUntil = knownPriorityUntil.get(payload.new.id);
               if (previousStatus === 'accepted' && payload.new.status === 'offered') {
                 playNotificationTone('delivery');
                 setNotice(`El domiciliario liberó ${formatDeliveryPublicCode(payload.new.public_code) || 'un domicilio'}. Se publicó de nuevo para otros domiciliarios.`);
               }
+              if (previousStatus === 'offered' && payload.new.status === 'offered' &&
+                  String(payload.new.priority_until || '') !== String(previousPriorityUntil || '')) {
+                playNotificationTone('delivery');
+                setNotice(`El domicilio ${formatDeliveryPublicCode(payload.new.public_code) || ''} quedó disponible para otros domiciliarios.`.trim());
+              }
             }
             if (payload.new?.id) knownStatuses.set(payload.new.id, payload.new.status);
+            if (payload.new?.id) knownPriorityUntil.set(payload.new.id, payload.new.priority_until);
             setDeliveries((current) => {
               if (payload.eventType === 'DELETE') {
                 return current.filter((item) => item.id !== payload.old.id);
@@ -1539,6 +1616,23 @@ function App() {
   };
 
   const selectedServiceType = getServiceTypeConfig(form.serviceType);
+  const serviceFilterActive = purchaseFilter !== '' || crossFilter !== '';
+  const filteredServiceTypes = serviceFilterActive
+    ? SERVICE_TYPES
+      .filter((service) => {
+        const servicePurchaseCount = service.purchaseCount ?? 0;
+        const serviceCrossCount = service.crossCount ?? 0;
+        const selectedPurchaseCount = purchaseFilter === '' ? 0 : Number(purchaseFilter);
+        const selectedCrossCount = crossFilter === '' ? 0 : Number(crossFilter);
+        return servicePurchaseCount === selectedPurchaseCount && serviceCrossCount === selectedCrossCount;
+      })
+      .sort((first, second) => {
+        const firstCombined = first.kind === 'combinedService';
+        const secondCombined = second.kind === 'combinedService';
+        if (firstCombined !== secondCombined) return firstCombined ? -1 : 1;
+        return SERVICE_TYPES.indexOf(first) - SERVICE_TYPES.indexOf(second);
+      })
+    : SERVICE_TYPES;
   const hasTaskDetails = Boolean(selectedServiceType.requiresPurchase || selectedServiceType.requiresCross);
   const requiresClient = Boolean(selectedServiceType.requiresClient);
   const requiresPayment = Boolean(selectedServiceType.requiresPayment);
@@ -1638,40 +1732,76 @@ function App() {
   };
 
   const updateServiceType = (serviceType) => {
-    const nextServiceType = getServiceTypeConfig(serviceType);
     setSelectedCustomerId('');
     setCustomerAddresses([]);
-    setForm((current) => ({
-      ...current,
-      serviceType: nextServiceType.value,
-      kind: nextServiceType.kind,
-      clientName: nextServiceType.requiresClient ? current.clientName : '',
-      clientPhone: nextServiceType.requiresClient ? current.clientPhone : '',
-      address: nextServiceType.requiresClient ? current.address : '',
-      paymentMethod: nextServiceType.requiresPayment ? current.paymentMethod : 'cash',
-      paymentAmount: nextServiceType.requiresPayment ? current.paymentAmount : '',
-      cashExpected: nextServiceType.requiresPayment ? current.cashExpected : '',
-      purchaseItems: nextServiceType.requiresPurchase ? [createPurchaseItem()] : [],
-      crossStops: nextServiceType.requiresCross ? [createCrossStop()] : [],
-    }));
+    setForm((current) => {
+      const nextServiceType = getServiceTypeConfig(serviceType);
+      const purchaseCount = nextServiceType.purchaseCount ?? (nextServiceType.requiresPurchase ? 1 : 0);
+      const crossCount = nextServiceType.crossCount ?? (nextServiceType.requiresCross ? 1 : 0);
+      const nextPurchaseItems = resizeTaskRows(
+        current.serviceType === serviceType ? current.purchaseItems : [],
+        purchaseCount,
+        createPurchaseItem,
+      );
+      const nextCrossStops = resizeTaskRows(
+        current.serviceType === serviceType ? current.crossStops : [],
+        crossCount,
+        createCrossStop,
+      );
+      return {
+        ...current,
+        serviceType: nextServiceType.value,
+        kind: nextServiceType.kind,
+        clientName: nextServiceType.requiresClient ? current.clientName : '',
+        clientPhone: nextServiceType.requiresClient ? current.clientPhone : '',
+        address: nextServiceType.requiresClient ? current.address : '',
+        paymentMethod: nextServiceType.requiresPayment ? current.paymentMethod : 'cash',
+        paymentAmount: nextServiceType.requiresPayment ? current.paymentAmount : '',
+        cashExpected: nextServiceType.requiresPayment ? current.cashExpected : '',
+        purchaseItems: nextPurchaseItems,
+        crossStops: nextCrossStops,
+      };
+    });
   };
 
   const updatePurchaseItem = (itemId, field, value) => {
     setForm((current) => ({
       ...current,
-      purchaseItems: current.purchaseItems.map((item) => item.id === itemId ? { ...item, [field]: value } : item),
+      purchaseItems: current.purchaseItems.map((item) => item.id === itemId
+        ? { ...item, [field]: value, ...(field === 'merchant' ? { branch: '' } : {}) }
+        : item),
     }));
   };
 
   const addPurchaseItem = () => {
-    setForm((current) => ({ ...current, purchaseItems: [...current.purchaseItems, createPurchaseItem()] }));
+    setForm((current) => {
+      if (current.purchaseItems.length >= MAX_COMBINATION_TASKS) return current;
+      const purchaseItems = [...current.purchaseItems, createPurchaseItem()];
+      const nextServiceType = isDomicilioServiceType(current.serviceType)
+        ? findDomicilioCombination(purchaseItems.length, current.crossStops.length)
+        : getServiceTypeConfig(current.serviceType);
+      return {
+        ...current,
+        serviceType: nextServiceType.value,
+        kind: nextServiceType.kind,
+        purchaseItems,
+      };
+    });
   };
 
   const removePurchaseItem = (itemId) => {
-    setForm((current) => ({
-      ...current,
-      purchaseItems: current.purchaseItems.filter((item) => item.id !== itemId),
-    }));
+    setForm((current) => {
+      const purchaseItems = current.purchaseItems.filter((item) => item.id !== itemId);
+      const nextServiceType = isDomicilioServiceType(current.serviceType)
+        ? findDomicilioCombination(purchaseItems.length, current.crossStops.length)
+        : getServiceTypeConfig(current.serviceType);
+      return {
+        ...current,
+        serviceType: nextServiceType.value,
+        kind: nextServiceType.kind,
+        purchaseItems,
+      };
+    });
   };
 
   const updateCrossStop = (stopId, field, value) => {
@@ -1682,18 +1812,34 @@ function App() {
   };
 
   const addCrossStop = () => {
-    if (form.crossStops.length >= 10) {
-      setError('Un domicilio puede tener máximo 10 cruces.');
-      return;
-    }
-    setForm((current) => ({ ...current, crossStops: [...current.crossStops, createCrossStop()] }));
+    setForm((current) => {
+      if (current.crossStops.length >= MAX_COMBINATION_TASKS) return current;
+      const crossStops = [...current.crossStops, createCrossStop()];
+      const nextServiceType = isDomicilioServiceType(current.serviceType)
+        ? findDomicilioCombination(current.purchaseItems.length, crossStops.length)
+        : getServiceTypeConfig(current.serviceType);
+      return {
+        ...current,
+        serviceType: nextServiceType.value,
+        kind: nextServiceType.kind,
+        crossStops,
+      };
+    });
   };
 
   const removeCrossStop = (stopId) => {
-    setForm((current) => ({
-      ...current,
-      crossStops: current.crossStops.filter((stop) => stop.id !== stopId),
-    }));
+    setForm((current) => {
+      const crossStops = current.crossStops.filter((stop) => stop.id !== stopId);
+      const nextServiceType = isDomicilioServiceType(current.serviceType)
+        ? findDomicilioCombination(current.purchaseItems.length, crossStops.length)
+        : getServiceTypeConfig(current.serviceType);
+      return {
+        ...current,
+        serviceType: nextServiceType.value,
+        kind: nextServiceType.kind,
+        crossStops,
+      };
+    });
   };
 
   const publishDelivery = async (event) => {
@@ -1813,7 +1959,7 @@ function App() {
       pharmacy_code: pharmacy.code,
       zone_id: zone.id,
       kind: form.kind,
-      service_type: form.serviceType,
+      service_type: selectedServiceType.persistedValue || selectedServiceType.value,
       status: 'offered',
       client_name: requiresClient ? form.clientName.trim() : '',
       client_phone: requiresClient ? form.clientPhone.trim() : '',
@@ -1824,7 +1970,9 @@ function App() {
       address_reference: requiresClient ? '' : 'Operación interna entre farmacias o compra externa.',
       notes: form.notes.trim() || null,
       product_summary: productSummary,
-      payment_method: requiresPayment ? form.paymentMethod : 'none',
+      // La base actual conserva sus valores compatibles: el botón único
+      // "Tarjeta o QR" se persiste como card y se identifica como digital.
+      payment_method: requiresPayment ? (form.paymentMethod === 'digital' ? 'card' : form.paymentMethod) : 'none',
       payment_amount: requiresPayment ? Number(form.paymentAmount) || 0 : 0,
       cash_expected: requiresPayment && form.paymentMethod === 'cash' ? Number(form.cashExpected) : null,
       cash_change: requiresPayment && form.paymentMethod === 'cash' && cashChange >= 0 ? cashChange : null,
@@ -1832,7 +1980,7 @@ function App() {
       cross_count: crossStops.length,
       purchase_count: form.purchaseItems.length,
       change_of_money: false,
-      has_dataphone: requiresPayment && ['card', 'qr'].includes(form.paymentMethod),
+      has_dataphone: requiresPayment && form.paymentMethod === 'digital',
       pickup_stops: pickupStops,
       destination_options: requiresClient
         ? [{ type: 'client', label: form.address.trim() }]
@@ -2008,8 +2156,19 @@ function App() {
                   <div className="form-section-title"><span>1</span><div><strong>¿Qué necesitas gestionar?</strong><small>Elige la operación para mostrar solo los datos necesarios.</small></div></div>
                   <div className="operation-picker field">
                     <span>Tipo de operación <em> *</em></span>
+                    <div className="service-filter" aria-label="Filtrar combinaciones de compras y cruces">
+                      <div className="service-filter-header">
+                        <div><strong>Filtro rápido</strong><small>Deja ambos vacíos para ver todas las opciones.</small></div>
+                        {serviceFilterActive && <button type="button" className="text-button" onClick={() => { setPurchaseFilter(''); setCrossFilter(''); }}>Mostrar todas</button>}
+                      </div>
+                      <div className="service-filter-fields">
+                        <label className="service-filter-field"><span>¿Cuántas compras?</span><input type="number" min="0" max={MAX_COMBINATION_TASKS} step="1" inputMode="numeric" placeholder="0" value={purchaseFilter} onChange={(event) => setPurchaseFilter(event.target.value === '' ? '' : String(clampCombinationCount(event.target.value)))} /></label>
+                        <label className="service-filter-field"><span>¿Cuántos cruces?</span><input type="number" min="0" max={MAX_COMBINATION_TASKS} step="1" inputMode="numeric" placeholder="0" value={crossFilter} onChange={(event) => setCrossFilter(event.target.value === '' ? '' : String(clampCombinationCount(event.target.value)))} /></label>
+                      </div>
+                      <small className="service-filter-note">{serviceFilterActive ? `Mostrando ${filteredServiceTypes.length} opción${filteredServiceTypes.length === 1 ? '' : 'es'} con esa combinación.` : 'Si escribes solo cruces, las compras quedan en cero; si escribes ambos, busca la combinación exacta.'}</small>
+                    </div>
                     <div className="service-type-grid" role="group" aria-label="Tipo de operación">
-                      {SERVICE_TYPES.map((service) => <button type="button" key={service.value} className={form.serviceType === service.value ? 'service-type-choice active' : 'service-type-choice'} aria-pressed={form.serviceType === service.value} onClick={() => updateServiceType(service.value)}><strong>{service.label}</strong><small>{service.description}</small></button>)}
+                      {filteredServiceTypes.map((service) => <button type="button" key={service.value} className={form.serviceType === service.value ? 'service-type-choice active' : 'service-type-choice'} aria-pressed={form.serviceType === service.value} onClick={() => updateServiceType(service.value)}><strong>{service.label}</strong><small>{service.description}</small></button>)}
                     </div>
                     <p className="operation-helper">{selectedServiceType.description} {operationHelper}</p>
                   </div>
@@ -2029,19 +2188,19 @@ function App() {
                     {selectedServiceType.requiresPurchase && <div className="task-block">
                       <div className="task-block-header"><div><strong>Compras externas</strong><small>El domiciliario comprará fuera de la red de farmacias.</small></div><span className="task-count">{form.purchaseItems.length}</span></div>
                       {form.purchaseItems.map((item, index) => <PurchaseTaskRow key={item.id} item={item} index={index} canRemove={form.purchaseItems.length > 1} onChange={(field, value) => updatePurchaseItem(item.id, field, value)} onRemove={() => removePurchaseItem(item.id)} />)}
-                      <button type="button" className="secondary-button task-add-button" onClick={addPurchaseItem}>＋ Agregar compra</button>
+                      <button type="button" className="secondary-button task-add-button" onClick={addPurchaseItem} disabled={form.purchaseItems.length >= MAX_COMBINATION_TASKS} title={form.purchaseItems.length >= MAX_COMBINATION_TASKS ? 'Máximo 4 compras por domicilio' : undefined}>＋ Agregar compra{form.purchaseItems.length >= MAX_COMBINATION_TASKS ? ' · máximo 4' : ''}</button>
                     </div>}
                     {selectedServiceType.requiresCross && <div className="task-block">
-                      <div className="task-block-header"><div><strong>Cruces entre farmacias</strong><small>Origen es donde se recoge; destino es donde se entrega el producto.</small></div><span className="task-count">{form.crossStops.length}/10</span></div>
+                      <div className="task-block-header"><div><strong>Cruces entre farmacias</strong><small>Origen es donde se recoge; destino es donde se entrega el producto.</small></div><span className="task-count">{form.crossStops.length}</span></div>
                       {form.crossStops.map((stop, index) => <CrossTaskRow key={stop.id} stop={stop} index={index} canRemove={form.crossStops.length > 1} availablePharmacies={availablePharmacies} requestingPharmacy={pharmacy} onChange={(field, value) => updateCrossStop(stop.id, field, value)} onRemove={() => removeCrossStop(stop.id)} />)}
-                      <button type="button" className="secondary-button task-add-button" onClick={addCrossStop}>＋ Agregar cruce</button>
+                      <button type="button" className="secondary-button task-add-button" onClick={addCrossStop} disabled={form.crossStops.length >= MAX_COMBINATION_TASKS} title={form.crossStops.length >= MAX_COMBINATION_TASKS ? 'Máximo 4 cruces por domicilio' : undefined}>＋ Agregar cruce{form.crossStops.length >= MAX_COMBINATION_TASKS ? ' · máximo 4' : ''}</button>
                     </div>}
                   </div>}
 
                 {requiresPayment && <div className="form-section">
-                  <div className="form-section-title"><span>{paymentStep}</span><div><strong>Forma de pago</strong><small>Transferencia queda agrupada como QR.</small></div></div>
+                  <div className="form-section-title"><span>{paymentStep}</span><div><strong>Forma de pago</strong><small>Tarjeta y QR quedan agrupados como pago digital.</small></div></div>
                   <div className="payment-switcher" role="radiogroup" aria-label="Forma de pago">
-                    {Object.entries(PAYMENT_LABELS).map(([value, label]) => <button type="button" key={value} aria-pressed={form.paymentMethod === value} className={form.paymentMethod === value ? 'payment-choice active' : 'payment-choice'} onClick={() => setForm({ ...form, paymentMethod: value })}><span className={`payment-symbol ${value}`} aria-hidden="true">{value === 'cash' ? '$' : value === 'card' ? '▣' : '⌁'}</span>{label}</button>)}
+                    {Object.entries(PAYMENT_LABELS).map(([value, label]) => <button type="button" key={value} aria-pressed={form.paymentMethod === value} className={form.paymentMethod === value ? 'payment-choice active' : 'payment-choice'} onClick={() => setForm({ ...form, paymentMethod: value })}><span className={`payment-symbol ${value}`} aria-hidden="true">{value === 'cash' ? '$' : '▣'}</span>{label}</button>)}
                   </div>
                   <div className="field-grid two-columns payment-fields">
                     <Field label="Valor total del pedido" required><input value={form.paymentAmount} onChange={(event) => setForm({ ...form, paymentAmount: event.target.value })} placeholder="$ 0" inputMode="decimal" /></Field>
@@ -2053,7 +2212,7 @@ function App() {
                 <div className="form-section last-section summary-section">
                   <div className="form-section-title"><span>{summaryStep}</span><div><strong>Resumen antes de publicar</strong><small>Verifica los datos antes de enviar la oferta.</small></div></div>
                   <div className="request-summary">
-                    <div><span>Operación</span><strong>{form.serviceType}</strong></div>
+                    <div><span>Operación</span><strong>{selectedServiceType.label}</strong></div>
                     {requiresClient && <><div><span>Cliente</span><strong>{form.clientName || 'Sin nombre'}</strong><small>{form.clientPhone || 'Sin teléfono'}</small></div><div><span>Destino</span><strong>{form.address || 'Sin dirección'}</strong></div></>}
                     {selectedServiceType.requiresPurchase && <><div><span>Lugar de compra</span><strong>{form.purchaseItems[0]?.merchant || 'Sin comercio'}</strong></div><div><span>Sede o barrio</span><strong>{form.purchaseItems[0]?.branch || 'Sin sede'}</strong></div><div><span>Total de compras</span><strong>{form.purchaseItems.length}</strong></div></>}
                     {selectedServiceType.requiresCross && <div><span>Ruta del cruce</span><strong>{crossPreview || 'Sin ruta'}</strong><small>Total de cruces: {form.crossStops.length}</small></div>}
@@ -2269,7 +2428,7 @@ function DeliveryRow({ delivery, onOpenChat, onOpenEquivalent, couriers = [], on
   const [cancelError, setCancelError] = useState('');
   const [statusLabel, statusClass] = DELIVERY_STATUS[delivery.status] || ['Sin estado', 'status-cancelled'];
   // Migración 042: la farmacia cancela mientras el domicilio siga activo.
-  const canCancel = Boolean(onAssign) && ['offered', 'accepted', 'pickedUp'].includes(delivery.status);
+  const canCancel = ['offered', 'accepted', 'pickedUp'].includes(delivery.status);
   const submitCancel = async () => {
     const reason = cancelReason === 'Otro motivo' ? cancelOther.trim() : cancelReason;
     if (reason.length < 3) {
@@ -2735,7 +2894,7 @@ function equivalentConcept(equivalent) {
   }
   if (service.includes('compra')) return `Se hace compra externa. ${description}`.trim();
   if (service.includes('domicilio')) {
-    const payment = equivalent?.payment_method === 'cash' ? 'efectivo' : ['card', 'qr'].includes(equivalent?.payment_method) ? 'datáfono' : 'el método de pago registrado';
+    const payment = equivalent?.payment_method === 'cash' ? 'efectivo' : ['card', 'qr'].includes(equivalent?.payment_method) ? 'pago digital (tarjeta o QR)' : 'el método de pago registrado';
     return `Se hace domicilio con ${payment}.`;
   }
   return description || 'Servicio de mensajería registrado.';
