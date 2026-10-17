@@ -15,6 +15,28 @@ const supabase = SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY
 
 let webAppServiceWorkerPromise = null;
 
+// Selector del login: Farmacia o Administración, igual que Domiciliario o
+// Administrador en la APK. Se recuerda en este navegador.
+const LOGIN_MODE_KEY = 'farmanorte.loginMode';
+let pendingLoginError = '';
+
+function readLoginMode() {
+  try {
+    const value = window.localStorage.getItem(LOGIN_MODE_KEY);
+    return value === 'admin' || value === 'pharmacy' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLoginMode(value) {
+  try {
+    window.localStorage.setItem(LOGIN_MODE_KEY, value);
+  } catch {
+    // Sin almacenamiento: el selector funciona solo en esta pantalla.
+  }
+}
+
 function getWebPushCapability() {
   const hasWindow = typeof window !== 'undefined';
   const browserSupported = hasWindow
@@ -852,10 +874,20 @@ function MandatoryPasswordScreen({ profile }) {
 }
 
 function LoginScreen() {
+  const [mode, setMode] = useState(() => readLoginMode() ?? 'pharmacy');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(() => {
+    const message = pendingLoginError;
+    pendingLoginError = '';
+    return message;
+  });
+  const isAdminMode = mode === 'admin';
+  const chooseMode = (value) => {
+    setMode(value);
+    setError('');
+  };
   const atmosphereOrbitRef = useRef(null);
   const atmosphereGlowRef = useRef(null);
   const atmosphereFrameRef = useRef(null);
@@ -896,6 +928,7 @@ function LoginScreen() {
     event.preventDefault();
     setSubmitting(true);
     setError('');
+    writeLoginMode(mode);
     const { error: signInError } = await supabase.auth.signInWithPassword({ email: normalizeAuthIdentifier(email), password });
     if (signInError) setError(getErrorMessage(signInError));
     setSubmitting(false);
@@ -913,9 +946,14 @@ function LoginScreen() {
       <main className="auth-main">
         <div className="auth-form-wrap" onPointerMove={moveAtmosphere} onPointerLeave={resetAtmosphere}>
           <LoginFormAtmosphere orbitRef={atmosphereOrbitRef} glowRef={atmosphereGlowRef} />
-          <span className="section-kicker">Acceso de farmacia</span>
+          <div className="auth-role-switch" role="radiogroup" aria-label="Tipo de acceso">
+            {[['pharmacy', 'Farmacia'], ['admin', 'Administración']].map(([value, label]) => (
+              <button key={value} type="button" role="radio" aria-checked={mode === value} className={mode === value ? 'auth-role-option active' : 'auth-role-option'} onClick={() => chooseMode(value)}>{label}</button>
+            ))}
+          </div>
+          <span className="section-kicker">{isAdminMode ? 'Acceso de administración' : 'Acceso de farmacia'}</span>
           <h2>Inicia sesión</h2>
-          <p className="auth-copy">Usa el usuario que el administrador creó para tu farmacia.</p>
+          <p className="auth-copy">{isAdminMode ? 'Usa tu usuario de administrador para ver estadísticas, turnos, domiciliarios, zonas y farmacias.' : 'Usa el usuario que el administrador creó para tu farmacia.'}</p>
           {error && <div className="inline-alert error-alert" role="alert">{error}</div>}
           <form onSubmit={submit} className="auth-form" aria-busy={submitting}>
             <Field label="Usuario o correo" required>
@@ -924,7 +962,7 @@ function LoginScreen() {
             <Field label="Contraseña" required>
               <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••" autoComplete="current-password" required />
             </Field>
-            <button className="primary-button full-width" disabled={submitting}>{submitting ? 'Validando…' : 'Entrar al panel'} <span>→</span></button>
+            <button className="primary-button full-width" disabled={submitting}>{submitting ? 'Validando…' : isAdminMode ? 'Entrar a administración' : 'Entrar al panel'} <span>→</span></button>
           </form>
           <div className="auth-note"><span>●</span> Autenticación protegida por Supabase Auth</div>
         </div>
@@ -1118,6 +1156,19 @@ function App() {
       void registerWebPushSubscription(userId).then((pushState) => {
         if (isCurrent()) setWebPushState(pushState);
       });
+      // Igual que la APK: el rol debe coincidir con la opción elegida al entrar.
+      const loginMode = readLoginMode();
+      const roleMismatch = loginMode === 'admin'
+        ? profileData.role !== 'admin'
+        : loginMode === 'pharmacy' && profileData.role === 'admin';
+      if (roleMismatch) {
+        pendingLoginError = loginMode === 'admin'
+          ? 'Este usuario no tiene rol de administrador. Elige «Farmacia» para entrar.'
+          : 'Este usuario es administrador. Elige «Administración» para entrar.';
+        setLoading(false);
+        await supabase.auth.signOut();
+        return;
+      }
       if (profileData.role === 'admin') {
         // El administrador usa el panel de administración; no necesita farmacia.
         setLoading(false);

@@ -3272,3 +3272,10 @@ body { background: var(--fn-canvas); color: var(--fn-ink); }
   .admin-hbars li .admin-hbar-track { grid-column: 1 / -1; grid-row: 2; }
   .admin-bars { height: 180px; }
 }
+
+/* Selector Farmacia / Administración del login (como en la APK). */
+.auth-role-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 22px; padding: 4px; border: 1px solid #e3eaf2; border-radius: 18px; background: #f1f5fa; }
+.auth-role-option { min-height: 44px; border: 0; border-radius: 14px; background: transparent; color: var(--fn-muted); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; transition: background-color .18s ease, color .18s ease, box-shadow .18s ease; }
+.auth-role-option:hover { color: var(--fn-primary); }
+.auth-role-option.active { background: #fff; color: var(--fn-primary); box-shadow: 0 4px 14px rgba(0, 51, 153, .12); }
+.auth-role-option:focus-visible { outline: 2px solid var(--fn-primary); outline-offset: 2px; }
