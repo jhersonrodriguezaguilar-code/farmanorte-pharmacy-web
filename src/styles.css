@@ -3218,6 +3218,21 @@ body { background: var(--fn-canvas); color: var(--fn-ink); }
 .admin-kpi small { color: var(--fn-muted); font-size: 12px; }
 .admin-kpi-ok strong { color: var(--fn-ok); }
 .admin-kpi-danger strong { color: var(--fn-danger); }
+button.admin-kpi { font: inherit; text-align: left; cursor: pointer; transition: border-color .15s, box-shadow .15s, transform .15s; }
+button.admin-kpi:hover { border-color: var(--fn-primary); transform: translateY(-1px); }
+button.admin-kpi:focus-visible { outline: 3px solid color-mix(in srgb, var(--fn-primary) 35%, transparent); outline-offset: 2px; }
+.admin-kpi.selected { border-color: var(--fn-primary); box-shadow: 0 0 0 2px var(--fn-primary) inset; }
+.admin-delta { justify-self: start; margin-top: 4px; padding: 2px 8px; border-radius: 999px; background: var(--fn-canvas); color: var(--fn-muted); font-size: 12px; font-style: normal; font-weight: 600; font-variant-numeric: tabular-nums; }
+.admin-delta i { font-style: normal; font-weight: 400; }
+.admin-delta.up { background: color-mix(in srgb, var(--fn-ok) 14%, #fff); color: var(--fn-ok); }
+.admin-delta.down { background: color-mix(in srgb, var(--fn-danger) 12%, #fff); color: var(--fn-danger); }
+.admin-kpi-note { margin: 0 0 -4px; color: var(--fn-muted); font-size: 13px; }
+.admin-drill-sub { margin: 4px 0 0; color: var(--fn-muted); font-size: 13px; }
+.admin-more { margin-top: 12px; }
+.admin-status { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--fn-canvas); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.admin-status-delivered { background: color-mix(in srgb, var(--fn-ok) 14%, #fff); color: var(--fn-ok); }
+.admin-status-cancelled, .admin-status-expired, .admin-status-notDelivered { background: color-mix(in srgb, var(--fn-danger) 12%, #fff); color: var(--fn-danger); }
+.admin-status-offered, .admin-status-accepted, .admin-status-pickedUp { background: color-mix(in srgb, var(--fn-primary) 12%, #fff); color: var(--fn-primary); }
 .admin-legend { display: inline-flex; align-items: center; gap: 6px; color: var(--fn-muted); font-size: 12px; }
 .admin-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
 .legend-total { background: #b9cdf2; }
@@ -3262,6 +3277,9 @@ body { background: var(--fn-canvas); color: var(--fn-ink); }
 .admin-day-group + .admin-day-group { margin-top: 6px; }
 
 @media (max-width: 720px) {
+  .admin-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .admin-kpi { padding: 12px 14px; }
+  .admin-kpi strong { font-size: 20px; }
   .admin-card > :not(.card-heading) { margin-left: 16px; margin-right: 16px; }
   .admin-filters { padding: 14px; }
   .admin-filter-fields, .admin-filter-fields label, .admin-filter-fields select { width: 100%; }

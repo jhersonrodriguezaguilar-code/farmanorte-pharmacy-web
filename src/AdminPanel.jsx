@@ -71,6 +71,75 @@ function presetRange(preset) {
   }
 }
 
+function previousRange(range) {
+  const length = daysBetween(range.from, range.to).length;
+  return { from: addDays(range.from, -length), to: addDays(range.from, -1) };
+}
+
+function minutesBetween(start, end) {
+  if (!start || !end) return null;
+  const minutes = (new Date(end).getTime() - new Date(start).getTime()) / 60000;
+  return Number.isFinite(minutes) && minutes >= 0 ? minutes : null;
+}
+
+function formatMinutes(value) {
+  if (value == null) return '—';
+  if (value < 60) return `${Math.round(value)} min`;
+  const hours = Math.floor(value / 60);
+  const minutes = Math.round(value % 60);
+  return minutes ? `${hours} h ${minutes} min` : `${hours} h`;
+}
+
+function formatDateTime(value) {
+  if (!value) return '—';
+  return new Date(value).toLocaleString('es-CO', { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function average(values) {
+  const clean = values.filter((value) => value != null);
+  return clean.length ? clean.reduce((sum, value) => sum + value, 0) / clean.length : null;
+}
+
+const FAILED_STATUSES = new Set(['cancelled', 'expired', 'notDelivered']);
+
+function summarize(deliveries) {
+  const result = { total: deliveries.length, delivered: 0, active: 0, cancelled: 0, failed: 0, value: 0, earnings: 0, acceptMinutes: null, deliverMinutes: null, couriers: 0 };
+  const accept = [];
+  const deliver = [];
+  const couriers = new Set();
+  for (const delivery of deliveries) {
+    if (delivery.status === 'delivered') {
+      result.delivered += 1;
+      result.value += Number(delivery.payment_amount || 0);
+      result.earnings += Number(delivery.courier_earnings || 0);
+      deliver.push(minutesBetween(delivery.created_at, delivery.delivered_at));
+    } else if (ACTIVE_STATUSES.has(delivery.status)) result.active += 1;
+    else if (delivery.status === 'cancelled' || delivery.status === 'expired') result.cancelled += 1;
+    else if (delivery.status === 'notDelivered') result.failed += 1;
+    accept.push(minutesBetween(delivery.created_at, delivery.accepted_at));
+    if (delivery.accepted_courier_id) couriers.add(delivery.accepted_courier_id);
+  }
+  result.acceptMinutes = average(accept);
+  result.deliverMinutes = average(deliver);
+  result.couriers = couriers.size;
+  result.rate = result.total ? (result.delivered / result.total) * 100 : null;
+  result.ticket = result.delivered ? result.value / result.delivered : null;
+  return result;
+}
+
+// Variación frente al periodo anterior. lowerIsBetter invierte el color.
+function compare(current, previous, { lowerIsBetter = false, points = false } = {}) {
+  if (current == null || previous == null) return null;
+  if (points) {
+    const diff = current - previous;
+    return { text: `${diff > 0 ? '+' : ''}${diff.toFixed(1).replace('.', ',')} pts`, direction: Math.sign(Math.round(diff * 10)), good: lowerIsBetter ? diff < 0 : diff > 0 };
+  }
+  if (previous === 0) return current === 0 ? { text: 'Igual', direction: 0, good: true } : { text: 'Nuevo', direction: 1, good: !lowerIsBetter };
+  const change = ((current - previous) / previous) * 100;
+  const rounded = Math.round(change);
+  return { text: `${rounded > 0 ? '+' : ''}${rounded}%`, direction: Math.sign(rounded), good: lowerIsBetter ? change < 0 : change > 0 };
+}
+
 function daysBetween(from, to) {
   const days = [];
   for (let day = from; day <= to && days.length < 400; day = addDays(day, 1)) days.push(day);
@@ -163,6 +232,7 @@ export default function AdminPanel({ client, profile, onSignOut, Logo, Backgroun
   const [zoneFilter, setZoneFilter] = useState('');
   const [catalog, setCatalog] = useState({ pharmacies: [], zones: [], zonePharmacies: [], people: [], sellers: [] });
   const [deliveries, setDeliveries] = useState([]);
+  const [previousDeliveries, setPreviousDeliveries] = useState([]);
   const [shifts, setShifts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -180,7 +250,8 @@ export default function AdminPanel({ client, profile, onSignOut, Logo, Backgroun
     try {
       const fromIso = parseIsoDate(range.from).toISOString();
       const toIso = parseIsoDate(addDays(range.to, 1)).toISOString();
-      const [pharmacies, zones, zonePharmacies, people, sellers, deliveryRows, shiftRows] = await Promise.all([
+      const previous = previousRange(range);
+      const [pharmacies, zones, zonePharmacies, people, sellers, deliveryRows, shiftRows, previousRows] = await Promise.all([
         fetchAll(() => client.from('pharmacies').select('code, name, zone_name, address, active').order('code')),
         fetchAll(() => client.from('zones').select('id, name, active, reference').order('name')),
         fetchAll(() => client.from('zone_pharmacies').select('zone_id, pharmacy_code')),
@@ -188,7 +259,7 @@ export default function AdminPanel({ client, profile, onSignOut, Logo, Backgroun
         fetchAll(() => client.from('pharmacy_profiles').select('id, pharmacy_code, display_name, username, profile_role, active').order('display_name')),
         fetchAll(() => client
           .from('deliveries')
-          .select('id, public_code, pharmacy_code, zone_id, status, service_type, payment_amount, courier_earnings, accepted_courier_id, pharmacy_profile_id, created_by, created_at, delivered_at, cancelled_at')
+          .select('id, public_code, pharmacy_code, zone_id, status, service_type, payment_amount, courier_earnings, accepted_courier_id, pharmacy_profile_id, created_by, created_at, accepted_at, picked_up_at, delivered_at, cancelled_at')
           .gte('created_at', fromIso)
           .lt('created_at', toIso)
           .order('created_at', { ascending: true })),
@@ -199,9 +270,16 @@ export default function AdminPanel({ client, profile, onSignOut, Logo, Backgroun
           .lte('scheduled_for', range.to)
           .order('scheduled_for', { ascending: false })
           .order('starts_at', { ascending: true })),
+        // Mismo número de días justo antes del periodo, para comparar los KPIs.
+        fetchAll(() => client
+          .from('deliveries')
+          .select('id, pharmacy_code, zone_id, status, payment_amount, courier_earnings, accepted_courier_id, created_at, accepted_at, delivered_at')
+          .gte('created_at', parseIsoDate(previous.from).toISOString())
+          .lt('created_at', fromIso)),
       ]);
       setCatalog({ pharmacies, zones, zonePharmacies, people, sellers });
       setDeliveries(deliveryRows);
+      setPreviousDeliveries(previousRows);
       setShifts(shiftRows);
       setUpdatedAt(new Date());
     } catch (loadError) {
@@ -229,11 +307,14 @@ export default function AdminPanel({ client, profile, onSignOut, Logo, Backgroun
     return new Set(catalog.zonePharmacies.filter((row) => row.zone_id === zoneFilter).map((row) => row.pharmacy_code));
   }, [catalog.zonePharmacies, zoneFilter]);
 
-  const filteredDeliveries = useMemo(() => deliveries.filter((delivery) => {
+  const matchesFilters = useCallback((delivery) => {
     if (pharmacyFilter && delivery.pharmacy_code !== pharmacyFilter) return false;
     if (zoneFilter && delivery.zone_id !== zoneFilter && !zonePharmacyCodes?.has(delivery.pharmacy_code)) return false;
     return true;
-  }), [deliveries, pharmacyFilter, zoneFilter, zonePharmacyCodes]);
+  }, [pharmacyFilter, zoneFilter, zonePharmacyCodes]);
+
+  const filteredDeliveries = useMemo(() => deliveries.filter(matchesFilters), [deliveries, matchesFilters]);
+  const filteredPreviousDeliveries = useMemo(() => previousDeliveries.filter(matchesFilters), [previousDeliveries, matchesFilters]);
 
   const filteredShifts = useMemo(() => shifts.filter((shift) => {
     if (pharmacyFilter && shift.pharmacy_code !== pharmacyFilter && shift.assignment_type !== 'support') return false;
@@ -313,7 +394,7 @@ export default function AdminPanel({ client, profile, onSignOut, Logo, Backgroun
         {error && <div className="inline-alert error-alert" role="alert">{error}</div>}
         {deliveries.length >= MAX_ROWS && <div className="inline-alert" role="status">El periodo tiene más de {formatNumber(MAX_ROWS)} domicilios; se muestran los primeros. Reduce el rango de fechas.</div>}
 
-        {section === 'stats' && <AdminStats range={range} deliveries={filteredDeliveries} lookups={lookups} catalog={catalog} pharmacyFilter={pharmacyFilter} zonePharmacyCodes={zonePharmacyCodes} loading={loading} />}
+        {section === 'stats' && <AdminStats range={range} deliveries={filteredDeliveries} previousDeliveries={filteredPreviousDeliveries} lookups={lookups} catalog={catalog} pharmacyFilter={pharmacyFilter} zonePharmacyCodes={zonePharmacyCodes} loading={loading} />}
         {section === 'shifts' && <AdminShifts shifts={filteredShifts} lookups={lookups} loading={loading} />}
         {section === 'couriers' && <AdminCouriers catalog={catalog} deliveries={filteredDeliveries} shifts={shifts} lookups={lookups} />}
         {section === 'zones' && <AdminZones catalog={catalog} shifts={shifts} deliveries={deliveries} lookups={lookups} />}
@@ -323,20 +404,12 @@ export default function AdminPanel({ client, profile, onSignOut, Logo, Backgroun
   );
 }
 
-function AdminStats({ range, deliveries, lookups, catalog, pharmacyFilter, zonePharmacyCodes, loading }) {
-  const summary = useMemo(() => {
-    const result = { total: deliveries.length, delivered: 0, active: 0, cancelled: 0, failed: 0, value: 0, earnings: 0 };
-    for (const delivery of deliveries) {
-      if (delivery.status === 'delivered') {
-        result.delivered += 1;
-        result.value += Number(delivery.payment_amount || 0);
-        result.earnings += Number(delivery.courier_earnings || 0);
-      } else if (ACTIVE_STATUSES.has(delivery.status)) result.active += 1;
-      else if (delivery.status === 'cancelled' || delivery.status === 'expired') result.cancelled += 1;
-      else if (delivery.status === 'notDelivered') result.failed += 1;
-    }
-    return result;
-  }, [deliveries]);
+function AdminStats({ range, deliveries, previousDeliveries, lookups, catalog, pharmacyFilter, zonePharmacyCodes, loading }) {
+  const [drill, setDrill] = useState('');
+  const summary = useMemo(() => summarize(deliveries), [deliveries]);
+  const before = useMemo(() => summarize(previousDeliveries), [previousDeliveries]);
+  const previous = previousRange(range);
+  const activeCouriers = catalog.people.filter((item) => item.role === 'courier' && item.active !== false).length;
 
   const days = useMemo(() => {
     const map = new Map(daysBetween(range.from, range.to).map((day) => [day, { day, total: 0, delivered: 0 }]));
@@ -409,17 +482,25 @@ function AdminStats({ range, deliveries, lookups, catalog, pharmacyFilter, zoneP
 
   const maxDay = Math.max(1, ...days.map((day) => day.total));
   const maxWeek = Math.max(1, ...weeks.map((week) => week.total));
-  const rate = summary.total ? Math.round((summary.delivered / summary.total) * 100) : 0;
+  const kpis = [
+    { key: 'all', label: 'Domicilios', value: formatNumber(summary.total), hint: loading ? 'Cargando…' : `${days.length} ${days.length === 1 ? 'día' : 'días'}`, delta: compare(summary.total, before.total) },
+    { key: 'delivered', label: 'Cumplimiento', value: summary.rate == null ? '—' : `${Math.round(summary.rate)}%`, hint: `${formatNumber(summary.delivered)} entregados`, tone: 'ok', delta: compare(summary.rate, before.rate, { points: true }) },
+    { key: 'active', label: 'En curso', value: formatNumber(summary.active), hint: 'Publicados, aceptados o en recorrido' },
+    { key: 'failed', label: 'Cancelados o vencidos', value: formatNumber(summary.cancelled + summary.failed), hint: summary.failed ? `${summary.failed} no entregados` : 'Sin no entregados', tone: 'danger', delta: compare(summary.cancelled + summary.failed, before.cancelled + before.failed, { lowerIsBetter: true }) },
+    { key: 'accept', label: 'Tiempo de aceptación', value: formatMinutes(summary.acceptMinutes), hint: 'Promedio desde que se publica', delta: compare(summary.acceptMinutes, before.acceptMinutes, { lowerIsBetter: true }) },
+    { key: 'deliver', label: 'Tiempo de entrega', value: formatMinutes(summary.deliverMinutes), hint: 'Promedio de publicar a entregar', delta: compare(summary.deliverMinutes, before.deliverMinutes, { lowerIsBetter: true }) },
+    { key: 'value', label: 'Valor entregado', value: formatMoney(summary.value), hint: summary.ticket == null ? 'Sin entregas' : `Promedio ${formatMoney(summary.ticket)} por domicilio`, delta: compare(summary.value, before.value) },
+    { key: 'earnings', label: 'Ganancia domiciliarios', value: formatMoney(summary.earnings), hint: 'De los domicilios entregados', delta: compare(summary.earnings, before.earnings) },
+    { key: 'couriers', label: 'Domiciliarios con servicios', value: formatNumber(summary.couriers), hint: `De ${formatNumber(activeCouriers)} activos`, delta: compare(summary.couriers, before.couriers) },
+  ];
+  const drillKpi = kpis.find((item) => item.key === drill);
 
   return <div className="admin-stack">
-    <div className="admin-kpis" role="list">
-      <AdminKpi label="Domicilios" value={formatNumber(summary.total)} hint={loading ? 'Cargando…' : `${days.length} ${days.length === 1 ? 'día' : 'días'}`} />
-      <AdminKpi label="Entregados" value={formatNumber(summary.delivered)} hint={`${rate}% del total`} tone="ok" />
-      <AdminKpi label="En curso" value={formatNumber(summary.active)} hint="Publicados, aceptados o en recorrido" />
-      <AdminKpi label="Cancelados o vencidos" value={formatNumber(summary.cancelled)} hint={summary.failed ? `${summary.failed} no entregados` : 'Sin no entregados'} tone="danger" />
-      <AdminKpi label="Valor entregado" value={formatMoney(summary.value)} hint="Suma de pagos de lo entregado" />
-      <AdminKpi label="Ganancia domiciliarios" value={formatMoney(summary.earnings)} hint="De los domicilios entregados" />
+    <p className="admin-kpi-note">Comparado con {formatShortDay(previous.from)}{previous.from !== previous.to ? ` a ${formatShortDay(previous.to)}` : ''} (mismo número de días). Toca un indicador para ver sus domicilios.</p>
+    <div className="admin-kpis">
+      {kpis.map((item) => <AdminKpi key={item.key} {...item} selected={drill === item.key} onSelect={() => setDrill((current) => (current === item.key ? '' : item.key))} />)}
     </div>
+    {drillKpi && <AdminDrill kpi={drillKpi} deliveries={deliveries} lookups={lookups} onClose={() => setDrill('')} />}
 
     <section className="form-card admin-card">
       <div className="card-heading"><div><span className="section-kicker">Volumen</span><h2>Domicilios por día</h2></div><span className="admin-legend"><i className="legend-total" /> Total <i className="legend-ok" /> Entregados</span></div>
@@ -465,12 +546,89 @@ function AdminStats({ range, deliveries, lookups, catalog, pharmacyFilter, zoneP
   </div>;
 }
 
-function AdminKpi({ label, value, hint, tone }) {
-  return <div className={tone ? `admin-kpi admin-kpi-${tone}` : 'admin-kpi'} role="listitem">
+function AdminKpi({ label, value, hint, tone, delta, selected, onSelect }) {
+  const classes = ['admin-kpi', tone ? `admin-kpi-${tone}` : '', selected ? 'selected' : ''].filter(Boolean).join(' ');
+  return <button type="button" className={classes} aria-pressed={selected} onClick={onSelect}>
     <span>{label}</span>
     <strong>{value}</strong>
     <small>{hint}</small>
+    {delta && <em className={delta.direction === 0 ? 'admin-delta' : delta.good ? 'admin-delta up' : 'admin-delta down'} title="Frente al periodo anterior">
+      {delta.direction > 0 ? '▲' : delta.direction < 0 ? '▼' : '•'} {delta.text} <i>vs. anterior</i>
+    </em>}
+  </button>;
+}
+
+// Qué domicilios explica cada indicador y en qué orden mostrarlos.
+const DRILL_RULES = {
+  all: { filter: () => true },
+  delivered: { filter: (delivery) => delivery.status === 'delivered' },
+  active: { filter: (delivery) => ACTIVE_STATUSES.has(delivery.status) },
+  failed: { filter: (delivery) => FAILED_STATUSES.has(delivery.status) },
+  accept: { filter: (delivery) => delivery.accepted_at, sort: (delivery) => -(minutesBetween(delivery.created_at, delivery.accepted_at) ?? -1), title: 'los más lentos primero' },
+  deliver: { filter: (delivery) => delivery.status === 'delivered', sort: (delivery) => -(minutesBetween(delivery.created_at, delivery.delivered_at) ?? -1), title: 'los más lentos primero' },
+  value: { filter: (delivery) => delivery.status === 'delivered', sort: (delivery) => -Number(delivery.payment_amount || 0), title: 'mayor valor primero' },
+  earnings: { filter: (delivery) => delivery.status === 'delivered', sort: (delivery) => -Number(delivery.courier_earnings || 0), title: 'mayor ganancia primero' },
+  couriers: { filter: (delivery) => delivery.accepted_courier_id },
+};
+
+function AdminDrill({ kpi, deliveries, lookups, onClose }) {
+  const [limit, setLimit] = useState(50);
+  const rule = DRILL_RULES[kpi.key] ?? DRILL_RULES.all;
+  const rows = useMemo(() => {
+    const list = deliveries.filter(rule.filter);
+    return rule.sort ? [...list].sort((a, b) => rule.sort(a) - rule.sort(b)) : [...list].reverse();
+  }, [deliveries, rule]);
+  useEffect(() => { setLimit(50); }, [kpi.key]);
+
+  const heading = (subtitle) => <div className="card-heading">
+    <div><span className="section-kicker">Detalle del indicador</span><h2>{kpi.label}</h2><p className="admin-drill-sub">{subtitle}</p></div>
+    <button type="button" className="secondary-button compact-button" onClick={onClose}>Cerrar</button>
   </div>;
+
+  if (kpi.key === 'couriers') {
+    const map = new Map();
+    for (const delivery of rows) {
+      const entry = map.get(delivery.accepted_courier_id) ?? { id: delivery.accepted_courier_id, total: 0, delivered: 0, earnings: 0, accept: [] };
+      entry.total += 1;
+      if (delivery.status === 'delivered') { entry.delivered += 1; entry.earnings += Number(delivery.courier_earnings || 0); }
+      entry.accept.push(minutesBetween(delivery.created_at, delivery.accepted_at));
+      map.set(delivery.accepted_courier_id, entry);
+    }
+    const couriers = [...map.values()].sort((a, b) => b.total - a.total);
+    return <section className="form-card admin-card admin-drill">
+      {heading(`${formatNumber(couriers.length)} domiciliarios · más servicios primero`)}
+      {couriers.length === 0 ? <p className="admin-empty">Ningún domiciliario tomó servicios en el periodo.</p> : <div className="admin-table-wrap"><table className="admin-table">
+        <thead><tr><th>Domiciliario</th><th>Aceptados</th><th>Entregados</th><th>Aceptación promedio</th><th>Ganancia</th></tr></thead>
+        <tbody>{couriers.map((row) => <tr key={row.id}>
+          <td>{lookups.person.get(row.id)?.full_name || 'Domiciliario'}</td>
+          <td>{formatNumber(row.total)}</td>
+          <td>{formatNumber(row.delivered)}</td>
+          <td>{formatMinutes(average(row.accept))}</td>
+          <td>{formatMoney(row.earnings)}</td>
+        </tr>)}</tbody>
+      </table></div>}
+    </section>;
+  }
+
+  return <section className="form-card admin-card admin-drill">
+    {heading(`${formatNumber(rows.length)} domicilios · ${rule.title || 'los más recientes primero'}`)}
+    {rows.length === 0 ? <p className="admin-empty">No hay domicilios para este indicador en el periodo.</p> : <>
+      <div className="admin-table-wrap"><table className="admin-table">
+        <thead><tr><th>Código</th><th>Farmacia</th><th>Estado</th><th>Publicado</th><th>Aceptación</th><th>Entrega</th><th>Domiciliario</th><th>Valor</th></tr></thead>
+        <tbody>{rows.slice(0, limit).map((delivery) => <tr key={delivery.id}>
+          <td>{delivery.public_code || '—'}</td>
+          <td>{formatPharmacy(lookups.pharmacy.get(delivery.pharmacy_code), delivery.pharmacy_code)}</td>
+          <td><span className={`admin-status admin-status-${delivery.status}`}>{STATUS_LABELS[delivery.status] || delivery.status}</span></td>
+          <td>{formatDateTime(delivery.created_at)}</td>
+          <td>{formatMinutes(minutesBetween(delivery.created_at, delivery.accepted_at))}</td>
+          <td>{delivery.status === 'delivered' ? formatMinutes(minutesBetween(delivery.created_at, delivery.delivered_at)) : '—'}</td>
+          <td>{lookups.person.get(delivery.accepted_courier_id)?.full_name || '—'}</td>
+          <td>{formatMoney(delivery.payment_amount)}</td>
+        </tr>)}</tbody>
+      </table></div>
+      {rows.length > limit && <button type="button" className="secondary-button compact-button admin-more" onClick={() => setLimit((current) => current + 100)}>Ver {formatNumber(Math.min(100, rows.length - limit))} más</button>}
+    </>}
+  </section>;
 }
 
 function AdminRanking({ title, kicker, rows, unit, note = '' }) {
